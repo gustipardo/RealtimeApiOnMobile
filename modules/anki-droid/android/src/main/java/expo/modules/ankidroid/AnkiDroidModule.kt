@@ -73,17 +73,50 @@ class AnkiDroidModule : Module() {
     // Request AnkiDroid API permission
     AsyncFunction("requestApiPermission") { promise: Promise ->
       try {
-        val intent = Intent().apply {
-          component = android.content.ComponentName(
-            ANKIDROID_PACKAGE,
-            ANKIDROID_API_PERMISSION_ACTIVITY
-          )
+        // Try multiple approaches for different AnkiDroid versions
+
+        // Approach 1: Try the modern implicit intent (AnkiDroid 2.16+)
+        val implicitIntent = Intent("com.ichi2.anki.REQUEST_READ_WRITE_PERMISSION").apply {
+          setPackage(ANKIDROID_PACKAGE)
           addFlags(Intent.FLAG_ACTIVITY_NEW_TASK)
         }
-        context.startActivity(intent)
-        promise.resolve(true)
+
+        val packageManager = context.packageManager
+        if (implicitIntent.resolveActivity(packageManager) != null) {
+          context.startActivity(implicitIntent)
+          promise.resolve(true)
+          return@AsyncFunction
+        }
+
+        // Approach 2: Try the legacy explicit activity (older AnkiDroid)
+        try {
+          val legacyIntent = Intent().apply {
+            component = android.content.ComponentName(
+              ANKIDROID_PACKAGE,
+              ANKIDROID_API_PERMISSION_ACTIVITY
+            )
+            addFlags(Intent.FLAG_ACTIVITY_NEW_TASK)
+          }
+          context.startActivity(legacyIntent)
+          promise.resolve(true)
+          return@AsyncFunction
+        } catch (e: Exception) {
+          // Legacy approach failed, continue to fallback
+        }
+
+        // Approach 3: Fallback - open AnkiDroid app directly
+        // This will trigger permission request when we try to access the ContentProvider
+        val launchIntent = packageManager.getLaunchIntentForPackage(ANKIDROID_PACKAGE)
+        if (launchIntent != null) {
+          launchIntent.addFlags(Intent.FLAG_ACTIVITY_NEW_TASK)
+          context.startActivity(launchIntent)
+          promise.resolve(true)
+          return@AsyncFunction
+        }
+
+        promise.reject("REQUEST_FAILED", "Could not find a way to request AnkiDroid permission", null)
       } catch (e: Exception) {
-        promise.reject("REQUEST_FAILED", "Failed to open AnkiDroid permission request: ${e.message}", e)
+        promise.reject("REQUEST_FAILED", "Failed to request AnkiDroid permission: ${e.message}", e)
       }
     }
 
