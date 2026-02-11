@@ -15,7 +15,6 @@ class AnkiDroidModule : Module() {
   companion object {
     const val ANKIDROID_PACKAGE = "com.ichi2.anki"
     const val ANKIDROID_PERMISSION = "com.ichi2.anki.permission.READ_WRITE_DATABASE"
-    const val ANKIDROID_API_PERMISSION_ACTIVITY = "com.ichi2.anki.api.RequestPermissionActivity"
 
     // ContentProvider URIs
     const val AUTHORITY = "com.ichi2.anki.flashcards"
