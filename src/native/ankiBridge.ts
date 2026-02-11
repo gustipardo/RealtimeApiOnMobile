@@ -21,6 +21,34 @@ export const ankiBridge = {
   },
 
   /**
+   * Check if AnkiDroid API permission is granted.
+   * @returns Promise resolving to true if permission is granted
+   */
+  async hasApiPermission(): Promise<boolean> {
+    try {
+      return await AnkiDroidModule.hasApiPermission();
+    } catch (error) {
+      console.error('[ankiBridge] hasApiPermission error:', error);
+      return false;
+    }
+  },
+
+  /**
+   * Request AnkiDroid API permission.
+   * Opens AnkiDroid's permission request activity.
+   * Note: User must return to app after granting - call hasApiPermission() to verify.
+   * @returns Promise resolving to true if request was initiated
+   */
+  async requestApiPermission(): Promise<boolean> {
+    try {
+      return await AnkiDroidModule.requestApiPermission();
+    } catch (error) {
+      console.error('[ankiBridge] requestApiPermission error:', error);
+      return false;
+    }
+  },
+
+  /**
    * Get list of deck names from AnkiDroid.
    * Queries the AnkiDroid ContentProvider for available decks.
    * @returns Promise resolving to array of deck names
