@@ -5,6 +5,7 @@ import { useSettingsStore } from '../stores/useSettingsStore';
 import { useConnectionStore } from '../stores/useConnectionStore';
 import { ankiBridge } from '../native/ankiBridge';
 import { getSystemPrompt, allTools, getInitialMessage, formatToolResult } from '../config/prompts';
+import { startForegroundService, stopForegroundService, updateForegroundNotification } from './foregroundAudioService';
 
 /**
  * Session Manager - Orchestrates the study session
@@ -55,6 +56,17 @@ class SessionManager {
       if (firstCard) {
         this.sendFirstCard(firstCard.front, firstCard.back);
         transitionTo('asking_question', 'first_card_sent');
+      }
+
+      // 6. Start foreground service for background audio
+      try {
+        await startForegroundService(
+          'Voice Study Session',
+          `Studying ${selectedDeck} — ${cards.length} cards`
+        );
+      } catch (fgError) {
+        console.warn('[SessionManager] Failed to start foreground service:', fgError);
+        // Non-fatal: session works without it, just no background audio
       }
 
     } catch (error) {
@@ -201,9 +213,15 @@ class SessionManager {
     // Send result back to AI
     webrtcManager.sendToolResult(callId, result);
 
-    // Update phase
+    // Update phase and notification
     if (nextCard) {
       transitionTo('asking_question', 'next_card');
+      const total = getTotalCardCount();
+      const completed = stats.correct + stats.incorrect;
+      updateForegroundNotification(
+        'Voice Study Session',
+        `Card ${completed + 1} of ${total}`
+      ).catch(() => {}); // Non-fatal
     } else {
       transitionTo('session_complete', 'no_more_cards');
       await this.onSessionComplete();
@@ -271,6 +289,13 @@ class SessionManager {
     const stats = useSessionStore.getState().stats;
     console.log('[SessionManager] Session complete:', stats);
 
+    // Stop foreground service
+    try {
+      await stopForegroundService();
+    } catch (error) {
+      console.warn('[SessionManager] Failed to stop foreground service:', error);
+    }
+
     // Trigger AnkiDroid sync
     try {
       await ankiBridge.triggerSync();
@@ -285,6 +310,11 @@ class SessionManager {
    */
   endSession(): void {
     const { transitionTo } = useSessionStore.getState();
+
+    // Stop foreground service
+    stopForegroundService().catch((error) => {
+      console.warn('[SessionManager] Failed to stop foreground service:', error);
+    });
 
     // Disconnect WebRTC
     webrtcManager.disconnect();

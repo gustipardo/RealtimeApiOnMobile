@@ -63,7 +63,8 @@
         {
           "cameraPermission": false
         }
-      ]
+      ],
+      "./modules/expo-foreground-audio/withForegroundAudioService"
     ]
   }
 }
