@@ -1,0 +1,27 @@
+{
+  "permissions": {
+    "allow": [
+      "Bash(dir:*)",
+      "WebSearch",
+      "Bash(npx create-expo-app@latest:*)",
+      "Bash(del README.md)",
+      "Bash(npx expo install:*)",
+      "Bash(npm install:*)",
+      "Bash(npx expo:*)",
+      "Bash(ls:*)",
+      "Bash(npm ls:*)",
+      "Bash(npx jest --no-cache)",
+      "Bash(npm test)",
+      "Bash(npx tsc:*)",
+      "Bash(npx expo-modules-autolinking:*)",
+      "Bash(./gradlew tasks:*)",
+      "Bash(cd:*)",
+      "WebFetch(domain:docs.expo.dev)",
+      "WebFetch(domain:notifee.app)",
+      "WebFetch(domain:getstream.io)",
+      "WebFetch(domain:github.com)",
+      "Bash(findstr:*)",
+      "Bash(npx jest:*)"
+    ]
+  }
+}
