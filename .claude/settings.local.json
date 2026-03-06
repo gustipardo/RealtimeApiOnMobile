@@ -21,7 +21,10 @@
       "WebFetch(domain:getstream.io)",
       "WebFetch(domain:github.com)",
       "Bash(findstr:*)",
-      "Bash(npx jest:*)"
+      "Bash(npx jest:*)",
+      "Bash(adb logcat:*)",
+      "Bash(adb:*)",
+      "Bash(curl:*)"
     ]
   }
 }

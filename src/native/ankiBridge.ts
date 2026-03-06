@@ -62,6 +62,15 @@ export const ankiBridge = {
     }
   },
 
+  async getDeckInfo(): Promise<{ deckName: string; dueCount: number }[]> {
+    try {
+      return await AnkiDroidModule.getDeckInfo();
+    } catch (error) {
+      console.error('[ankiBridge] getDeckInfo error:', error);
+      throw createBridgeError('QUERY_FAILED', `Failed to get deck info: ${error}`);
+    }
+  },
+
   /**
    * Get due cards for a specific deck.
    * Queries AnkiDroid for cards that are due for review.
@@ -72,13 +81,15 @@ export const ankiBridge = {
   async getDueCards(deckName: string): Promise<AnkiCard[]> {
     try {
       const rawCards = await AnkiDroidModule.getDueCards(deckName);
-      return rawCards.map((card) => ({
+      console.log(`[ankiBridge] getDueCards('${deckName}') → ${rawCards.length} cards`);
+      return rawCards.map((card: any) => ({
         cardId: card.cardId,
         front: card.front,
         back: card.back,
         deckName: card.deckName,
       }));
     } catch (error) {
+      console.error(`[ankiBridge] getDueCards('${deckName}') error:`, error);
       throw createBridgeError('QUERY_FAILED', `Failed to get due cards: ${error}`);
     }
   },

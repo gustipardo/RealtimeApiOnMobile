@@ -71,11 +71,18 @@ export default function PermissionsScreen() {
   async function handleRequestAnkiDroidPermission() {
     setIsRequesting(true);
     try {
-      await ankiBridge.requestApiPermission();
-      // Permission dialog opens in AnkiDroid - user will return to app
-      // AppState listener will re-check permissions when app becomes active
+      const result = await PermissionsAndroid.request(
+        'com.ichi2.anki.permission.READ_WRITE_DATABASE' as any,
+        {
+          title: 'AnkiDroid Access',
+          message: 'This app needs access to your AnkiDroid flashcard decks and due cards.',
+          buttonPositive: 'Grant',
+          buttonNegative: 'Deny',
+        }
+      );
+      const granted = result === PermissionsAndroid.RESULTS.GRANTED;
+      setPermissions((prev) => ({ ...prev, ankidroid: granted ? 'granted' : 'denied' }));
     } catch (error) {
-      console.error('Failed to request AnkiDroid permission:', error);
       setPermissions((prev) => ({ ...prev, ankidroid: 'denied' }));
     }
     setIsRequesting(false);

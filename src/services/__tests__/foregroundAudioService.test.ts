@@ -23,6 +23,12 @@ jest.mock('expo-foreground-audio', () => ({
   },
 }));
 
+// Mock sessionManager (lazy-required inside foregroundAudioService for circular dep avoidance)
+const mockEndSessionFromNotification = jest.fn();
+jest.mock('../sessionManager', () => ({
+  sessionManager: { endSessionFromNotification: mockEndSessionFromNotification },
+}));
+
 // Mock stores and webrtcManager
 const mockTransitionTo = jest.fn();
 const mockSetMicrophoneMuted = jest.fn();
@@ -53,6 +59,7 @@ function getListenerCallback(eventName: string): Function | undefined {
 describe('foregroundAudioService', () => {
   beforeEach(() => {
     jest.clearAllMocks();
+    mockEndSessionFromNotification.mockClear();
     // Re-setup the mock return for useSessionStore since clearAllMocks resets it
     const { useSessionStore } = require('../../stores/useSessionStore');
     useSessionStore.getState.mockReturnValue({
@@ -144,16 +151,11 @@ describe('foregroundAudioService', () => {
       expect(mockTransitionTo).toHaveBeenCalledWith('asking_question', 'notification_resume');
     });
 
-    it('calls sessionManager.endSession on "end" action', () => {
-      const mockEndSession = jest.fn();
-      jest.mock('../sessionManager', () => ({
-        sessionManager: { endSession: mockEndSession },
-      }));
-
+    it('calls sessionManager.endSessionFromNotification on "end" action', () => {
       const handler = getListenerCallback('onNotificationAction');
       handler!({ action: 'end' });
 
-      expect(mockEndSession).toHaveBeenCalled();
+      expect(mockEndSessionFromNotification).toHaveBeenCalled();
     });
   });
 

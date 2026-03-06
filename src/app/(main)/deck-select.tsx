@@ -21,30 +21,15 @@ export default function DeckSelectScreen() {
   const [decks, setDecks] = useState<DeckInfo[]>([]);
   const [loadingState, setLoadingState] = useState<LoadingState>('loading');
   const [refreshing, setRefreshing] = useState(false);
-  const [selectedDeckName, setSelectedDeckName] = useState<string | null>(null);
-
   const loadDecks = useCallback(async () => {
     try {
-      const deckNames = await ankiBridge.getDeckNames();
+      const deckInfos = await ankiBridge.getDeckInfo();
 
-      if (deckNames.length === 0) {
+      if (deckInfos.length === 0) {
         setLoadingState('empty');
         setDecks([]);
         return;
       }
-
-      // For each deck, get the due card count
-      // Note: This is a simplified version - real implementation in 2-5
-      // will use a more efficient query
-      const deckInfos: DeckInfo[] = await Promise.all(
-        deckNames.map(async (deckName) => {
-          const dueCards = await ankiBridge.getDueCards(deckName);
-          return {
-            deckName,
-            dueCount: dueCards.length,
-          };
-        })
-      );
 
       setDecks(deckInfos);
       setLoadingState('loaded');
@@ -64,13 +49,7 @@ export default function DeckSelectScreen() {
     setRefreshing(false);
   }
 
-  function handleSelectDeck(deckName: string, dueCount: number) {
-    if (dueCount === 0) {
-      // Show message that deck has no due cards
-      setSelectedDeckName(deckName);
-      return;
-    }
-
+  function handleSelectDeck(deckName: string) {
     setSelectedDeck(deckName);
     router.push('/(main)/session');
   }
@@ -149,8 +128,7 @@ export default function DeckSelectScreen() {
         renderItem={({ item }) => (
           <DeckCard
             deck={item}
-            isSelected={selectedDeckName === item.deckName && item.dueCount === 0}
-            onPress={() => handleSelectDeck(item.deckName, item.dueCount)}
+            onPress={() => handleSelectDeck(item.deckName)}
           />
         )}
         ListEmptyComponent={
@@ -160,62 +138,35 @@ export default function DeckSelectScreen() {
         }
       />
 
-      {/* No due cards message */}
-      {selectedDeckName && decks.find((d) => d.deckName === selectedDeckName)?.dueCount === 0 && (
-        <View className="absolute bottom-0 left-0 right-0 border-t border-gray-200 bg-amber-50 p-4">
-          <Text className="text-center text-amber-800">
-            No cards due for review in "{selectedDeckName}".{'\n'}
-            Try another deck or check back later.
-          </Text>
-        </View>
-      )}
     </View>
   );
 }
 
 function DeckCard({
   deck,
-  isSelected,
   onPress,
 }: {
   deck: DeckInfo;
-  isSelected: boolean;
   onPress: () => void;
 }) {
-  const hasDueCards = deck.dueCount > 0;
-
   return (
     <Pressable
       onPress={onPress}
-      className={`mb-3 rounded-xl border-2 p-4 ${
-        isSelected
-          ? 'border-amber-400 bg-amber-50'
-          : hasDueCards
-          ? 'border-gray-200 active:border-blue-400 active:bg-blue-50'
-          : 'border-gray-100 bg-gray-50'
-      }`}
+      className="mb-3 rounded-xl border-2 border-gray-200 p-4 active:border-blue-400 active:bg-blue-50"
     >
       <View className="flex-row items-center justify-between">
         <View className="flex-1">
-          <Text
-            className={`text-lg font-semibold ${
-              hasDueCards ? 'text-gray-900' : 'text-gray-400'
-            }`}
-          >
+          <Text className="text-lg font-semibold text-gray-900">
             {deck.deckName}
           </Text>
-          <Text
-            className={`mt-1 text-sm ${
-              hasDueCards ? 'text-gray-600' : 'text-gray-400'
-            }`}
-          >
-            {deck.dueCount === 0
-              ? 'No cards due'
-              : `${deck.dueCount} card${deck.dueCount !== 1 ? 's' : ''} due`}
-          </Text>
+          {deck.dueCount > 0 && (
+            <Text className="mt-1 text-sm text-gray-600">
+              {`${deck.dueCount} card${deck.dueCount !== 1 ? 's' : ''} due`}
+            </Text>
+          )}
         </View>
 
-        {hasDueCards && (
+        {deck.dueCount > 0 && (
           <View className="ml-4 rounded-full bg-blue-500 px-3 py-1">
             <Text className="text-sm font-bold text-white">{deck.dueCount}</Text>
           </View>

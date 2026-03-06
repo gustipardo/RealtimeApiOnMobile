@@ -152,6 +152,41 @@ export default function SessionScreen() {
     );
   }
 
+  // Paused state
+  if (sessionPhase === 'paused') {
+    return (
+      <View className="flex-1 items-center justify-center bg-white px-6">
+        <View className="mb-6 h-24 w-24 items-center justify-center rounded-full bg-yellow-100">
+          <Text className="text-5xl">⏸</Text>
+        </View>
+        <Text className="mb-2 text-center text-2xl font-bold text-gray-900">
+          Session Paused
+        </Text>
+        <Text className="mb-8 text-center text-base text-gray-600">
+          Resume from here or from the notification bar.
+        </Text>
+        <View className="w-full gap-3">
+          <Pressable
+            onPress={() => sessionManager.resume()}
+            className="rounded-xl bg-blue-500 px-6 py-4 active:bg-blue-600"
+          >
+            <Text className="text-center text-lg font-semibold text-white">
+              Resume Session
+            </Text>
+          </Pressable>
+          <Pressable
+            onPress={handleEndSession}
+            className="rounded-xl border-2 border-red-300 px-6 py-4 active:bg-red-50"
+          >
+            <Text className="text-center text-lg font-semibold text-red-600">
+              End Session
+            </Text>
+          </Pressable>
+        </View>
+      </View>
+    );
+  }
+
   // Active session UI
   const remainingCards = cards.length - currentIndex;
 
@@ -185,26 +220,38 @@ export default function SessionScreen() {
       </View>
 
       {/* Main content area */}
-      <View className="flex-1 items-center justify-center px-6">
-        {/* Microphone indicator */}
-        <View className="mb-6 h-32 w-32 items-center justify-center rounded-full bg-blue-100">
-          <Text className="text-6xl">
-            {sessionPhase === 'awaiting_answer' ? '🎤' : '🔊'}
+      <View className="flex-1 px-6 py-6">
+        {/* Card front — main focus */}
+        {currentCard && (
+          <View className="mb-4 w-full rounded-2xl border border-blue-100 bg-blue-50 p-5">
+            <Text className="mb-1 text-xs font-medium uppercase tracking-wide text-blue-400">
+              Question
+            </Text>
+            <Text className="text-2xl font-bold leading-snug text-gray-900">
+              {currentCard.front}
+            </Text>
+          </View>
+        )}
+
+        {/* Phase indicator + mic icon */}
+        <View className="mb-4 flex-row items-center gap-3">
+          <View className="h-10 w-10 items-center justify-center rounded-full bg-blue-100">
+            <Text className="text-xl">
+              {sessionPhase === 'awaiting_answer' ? '🎤' : '🔊'}
+            </Text>
+          </View>
+          <Text className="text-base font-semibold text-gray-700">
+            {getPhaseLabel(sessionPhase)}
           </Text>
         </View>
 
-        {/* Phase indicator */}
-        <Text className="mb-2 text-center text-xl font-semibold text-gray-900">
-          {getPhaseLabel(sessionPhase)}
-        </Text>
-
-        {/* Visual companion display */}
-        <View className="mt-4 w-full">
+        {/* Evaluation / correct answer feedback */}
+        <View className="w-full">
           <CardDisplay />
         </View>
 
         {/* Stats during session */}
-        <View className="mt-6 flex-row gap-6">
+        <View className="mt-auto flex-row justify-center gap-10">
           <View className="items-center">
             <Text className="text-2xl font-bold text-green-600">{stats.correct}</Text>
             <Text className="text-xs text-gray-500">Correct</Text>

@@ -72,7 +72,7 @@ function registerListeners(): void {
       case 'end':
         // Import sessionManager lazily to avoid circular dependency
         const { sessionManager } = require('./sessionManager');
-        sessionManager.endSession();
+        sessionManager.endSessionFromNotification();
         break;
     }
   });

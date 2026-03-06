@@ -62,7 +62,7 @@ class SessionManager {
       try {
         await startForegroundService(
           'Voice Study Session',
-          `Studying ${selectedDeck} — ${cards.length} cards`
+          `Card 1 of ${cards.length}`
         );
       } catch (fgError) {
         console.warn('[SessionManager] Failed to start foreground service:', fgError);
@@ -306,23 +306,28 @@ class SessionManager {
   }
 
   /**
-   * End the current session
+   * End session triggered from the notification bar.
+   * Runs the full completion flow (sync + session_complete screen).
+   */
+  async endSessionFromNotification(): Promise<void> {
+    const { transitionTo } = useSessionStore.getState();
+    transitionTo('session_complete', 'notification_end');
+    await this.onSessionComplete();
+  }
+
+  /**
+   * End the current session immediately (e.g. user taps "End Session" in-app or navigates away).
+   * Does NOT show summary — caller is responsible for navigation.
    */
   endSession(): void {
     const { transitionTo } = useSessionStore.getState();
 
-    // Stop foreground service
     stopForegroundService().catch((error) => {
       console.warn('[SessionManager] Failed to stop foreground service:', error);
     });
 
-    // Disconnect WebRTC
     webrtcManager.disconnect();
-
-    // Clear cards
     clearCards();
-
-    // Reset state
     transitionTo('idle', 'session_ended');
 
     console.log('[SessionManager] Session ended');

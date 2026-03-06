@@ -77,9 +77,7 @@ class WebRTCManager {
       });
       this.state.dataChannel = dataChannel;
 
-      (dataChannel as any).onopen = () => {
-        console.log('[WebRTC] Data channel opened');
-      };
+      // onopen is set later by waitForDataChannel — log happens there
 
       (dataChannel as any).onmessage = (event: any) => {
         try {
@@ -127,6 +125,9 @@ class WebRTCManager {
       // 10. Wait for ICE connection
       await this.waitForIceConnection(peerConnection);
 
+      // 11. Wait for data channel to open before resolving
+      await this.waitForDataChannel(dataChannel);
+
       setConnectionState('connected');
       console.log('[WebRTC] Connected to OpenAI Realtime API');
       return true;
@@ -160,6 +161,27 @@ class WebRTCManager {
 
       (pc as any).oniceconnectionstatechange = checkState;
       checkState(); // Check immediately in case already connected
+    });
+  }
+
+  /**
+   * Wait for data channel to reach 'open' state
+   */
+  private waitForDataChannel(dc: any): Promise<void> {
+    return new Promise((resolve, reject) => {
+      if (dc.readyState === 'open') {
+        console.log('[WebRTC] Data channel opened');
+        resolve();
+        return;
+      }
+      const timeout = setTimeout(() => {
+        reject(new Error('Data channel open timeout'));
+      }, 10000);
+      dc.onopen = () => {
+        clearTimeout(timeout);
+        console.log('[WebRTC] Data channel opened');
+        resolve();
+      };
     });
   }
 
