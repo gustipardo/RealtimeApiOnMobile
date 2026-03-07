@@ -237,6 +237,27 @@ class WebRTCManager {
   }
 
   /**
+   * Wait for the next `response.done` server event.
+   * Useful to ensure an AI response has fully completed before proceeding.
+   */
+  waitForNextResponseDone(): Promise<void> {
+    return new Promise((resolve, reject) => {
+      const timeout = setTimeout(() => {
+        this.off('response.done', handler);
+        reject(new Error('Timed out waiting for response.done'));
+      }, 30000);
+
+      const handler = () => {
+        clearTimeout(timeout);
+        this.off('response.done', handler);
+        resolve();
+      };
+
+      this.on('response.done', handler);
+    });
+  }
+
+  /**
    * Send a text message to trigger AI response
    */
   sendTextMessage(text: string): void {

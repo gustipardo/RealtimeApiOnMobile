@@ -6,6 +6,7 @@ import {
   FlatList,
   ActivityIndicator,
   RefreshControl,
+  Platform,
 } from 'react-native';
 import { useRouter } from 'expo-router';
 import { useSettingsStore } from '../../stores/useSettingsStore';
@@ -128,7 +129,7 @@ export default function DeckSelectScreen() {
   return (
     <View className="flex-1 bg-gray-50">
       {/* Header */}
-      <View className="bg-white px-6 pb-5 pt-16 shadow-sm">
+      <View className="bg-white px-6 pb-5 pt-16" style={Platform.OS === 'android' ? { elevation: 2 } : {}}>
         <Text className="text-2xl font-bold text-gray-900">Choose a Deck</Text>
         <Text className="mt-1 text-sm text-gray-500">
           {decks.length} deck{decks.length !== 1 ? 's' : ''}

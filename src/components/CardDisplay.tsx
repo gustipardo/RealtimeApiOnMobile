@@ -12,7 +12,9 @@ import { useCardCacheStore } from '../stores/useCardCacheStore';
 export function CardDisplay() {
   const phase = useSessionStore((s) => s.phase);
   const lastEvaluation = useSessionStore((s) => s.lastEvaluation);
-  const currentCard = useCardCacheStore((s) => s.getCurrentCard());
+  const cards = useCardCacheStore((s) => s.cards);
+  const currentIndex = useCardCacheStore((s) => s.currentIndex);
+  const currentCard = cards[currentIndex];
 
   const fadeAnim = useRef(new Animated.Value(0)).current;
   const scaleAnim = useRef(new Animated.Value(0.9)).current;
@@ -53,12 +55,16 @@ export function CardDisplay() {
 
   return (
     <Animated.View
-      style={{ opacity: fadeAnim, transform: [{ scale: scaleAnim }] }}
-      className={`w-full rounded-2xl border-2 p-5 ${
-        isCorrect
-          ? 'border-green-200 bg-green-50'
-          : 'border-red-200 bg-red-50'
-      }`}
+      style={{
+        opacity: fadeAnim,
+        transform: [{ scale: scaleAnim }],
+        width: '100%',
+        borderRadius: 16,
+        borderWidth: 2,
+        padding: 20,
+        borderColor: isCorrect ? '#bbf7d0' : '#fecaca',
+        backgroundColor: isCorrect ? '#f0fdf4' : '#fef2f2',
+      }}
     >
       {/* Evaluation badge */}
       {showEvaluationBadge && (

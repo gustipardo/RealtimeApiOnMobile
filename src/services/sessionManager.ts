@@ -56,14 +56,17 @@ class SessionManager {
       // 5. Register event handlers
       this.registerEventHandlers();
 
-      // 6. Send first card to AI
+      // 6. Send first card to AI, wait for first response, then enable VAD
       const firstCard = getCurrentCard();
       if (firstCard) {
-        this.sendFirstCard(firstCard.front, firstCard.back);
-        transitionTo('asking_question', 'first_card_sent');
+        await this.sendFirstCard(firstCard.front, firstCard.back);
+        // The AI has finished its first response (greeting + question).
+        // Go straight to awaiting_answer since the question was already asked.
+        transitionTo('awaiting_answer', 'first_card_sent');
       }
 
       // 7. Unmute microphone now that the session is fully configured
+      //    and server_vad has been enabled after the first AI response.
       webrtcManager.setMicrophoneMuted(false);
 
       // 8. Start foreground service for background audio
@@ -85,6 +88,8 @@ class SessionManager {
 
   /**
    * Configure AI session with system prompt and tools.
+   * Deliberately starts with turn_detection DISABLED (null) so that
+   * server_vad cannot race with our initial card message.
    * Waits for the server to acknowledge the update before resolving.
    */
   private async configureAISession(deckName: string, cardCount: number): Promise<void> {
@@ -94,16 +99,33 @@ class SessionManager {
       instructions: systemPrompt,
       tools: allTools,
       modalities: ['text', 'audio'],
-      turn_detection: { type: 'server_vad' },
+      turn_detection: null,  // Disabled until first AI response completes
     });
   }
 
   /**
-   * Send first card to AI
+   * Send first card to AI and wait for the AI's first response to complete.
+   * Only after the response finishes do we enable server_vad for voice interaction.
    */
-  private sendFirstCard(front: string, back: string): void {
+  private async sendFirstCard(front: string, back: string): Promise<void> {
     const message = getInitialMessage(front, back);
+    console.log('[SessionManager] sendFirstCard - front:', front);
+    console.log('[SessionManager] sendFirstCard - back:', back);
+    console.log('[SessionManager] sendFirstCard - full message:', message);
+
+    // Send the card as a user message and request a response
     webrtcManager.sendTextMessage(message);
+
+    // Wait for the AI to finish its first response before enabling VAD.
+    // This guarantees the AI has processed the card content in its context.
+    await webrtcManager.waitForNextResponseDone();
+
+    console.log('[SessionManager] First AI response complete, enabling server_vad');
+
+    // NOW enable server_vad for ongoing voice interaction
+    await webrtcManager.updateSession({
+      turn_detection: { type: 'server_vad' },
+    });
   }
 
   /**

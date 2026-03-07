@@ -1,5 +1,5 @@
 import { useEffect, useState, useCallback, useRef } from 'react';
-import { View, Text, Pressable, ActivityIndicator, Animated } from 'react-native';
+import { View, Text, Pressable, ActivityIndicator, Animated, Platform } from 'react-native';
 import { useRouter } from 'expo-router';
 import { useConnectionStore } from '../../stores/useConnectionStore';
 import { useSessionStore } from '../../stores/useSessionStore';
@@ -29,6 +29,14 @@ function PulsingIndicator({ active, color }: { active: boolean; color: string })
     }
   }, [active]);
 
+  const colorHexMap: Record<string, string> = {
+    blue: '#3b82f6',
+    green: '#22c55e',
+    amber: '#f59e0b',
+    red: '#ef4444',
+    gray: '#9ca3af',
+  };
+
   const bgMap: Record<string, string> = {
     blue: 'bg-blue-500',
     green: 'bg-green-500',
@@ -41,8 +49,15 @@ function PulsingIndicator({ active, color }: { active: boolean; color: string })
     <View className="items-center justify-center" style={{ width: 56, height: 56 }}>
       {active && (
         <Animated.View
-          className={`absolute h-14 w-14 rounded-full ${bgMap[color] ?? 'bg-blue-500'}`}
-          style={{ opacity: 0.25, transform: [{ scale: pulseAnim }] }}
+          style={{
+            position: 'absolute',
+            height: 56,
+            width: 56,
+            borderRadius: 28,
+            backgroundColor: colorHexMap[color] ?? '#3b82f6',
+            opacity: 0.25,
+            transform: [{ scale: pulseAnim }],
+          }}
         />
       )}
       <View className={`h-12 w-12 items-center justify-center rounded-full ${bgMap[color] ?? 'bg-blue-500'}`}>
@@ -120,8 +135,8 @@ function ProgressHeader({
         <Text className="text-xs font-medium text-gray-500">
           {currentIndex} / {totalCards} cards
         </Text>
-        <View className="flex-row items-center gap-4">
-          <View className="flex-row items-center">
+        <View className="flex-row items-center">
+          <View className="flex-row items-center mr-4">
             <View className="mr-1.5 h-2.5 w-2.5 rounded-full bg-green-500" />
             <Text className="text-xs font-bold text-green-700">{stats.correct}</Text>
           </View>
@@ -144,9 +159,9 @@ export default function SessionScreen() {
   const sessionPhase = useSessionStore((s) => s.phase);
   const stats = useSessionStore((s) => s.stats);
   const selectedDeck = useSettingsStore((s) => s.selectedDeck);
-  const currentCard = useCardCacheStore((s) => s.getCurrentCard());
   const cards = useCardCacheStore((s) => s.cards);
   const currentIndex = useCardCacheStore((s) => s.currentIndex);
+  const currentCard = cards[currentIndex];
 
   const [error, setError] = useState<string | null>(null);
 
@@ -219,7 +234,7 @@ export default function SessionScreen() {
     return (
       <View className="flex-1 items-center justify-center bg-gray-50 px-8">
         <View className="mb-5 h-20 w-20 items-center justify-center rounded-full bg-red-100">
-          <Text className="text-3xl font-bold text-red-500">{'\u0021'}</Text>
+          <Text className="text-3xl font-bold text-red-500">!</Text>
         </View>
         <Text className="mb-2 text-center text-xl font-bold text-gray-900">
           Something Went Wrong
@@ -227,10 +242,10 @@ export default function SessionScreen() {
         <Text className="mb-8 text-center text-base leading-relaxed text-gray-500">
           {error || 'An unexpected error occurred. Please try again.'}
         </Text>
-        <View className="w-full gap-3">
+        <View className="w-full">
           <Pressable
             onPress={handleRetry}
-            className="rounded-2xl bg-blue-500 py-4 active:bg-blue-600"
+            className="mb-3 rounded-2xl bg-blue-500 py-4 active:bg-blue-600"
           >
             <Text className="text-center text-base font-bold text-white">Try Again</Text>
           </Pressable>
@@ -315,7 +330,7 @@ export default function SessionScreen() {
     return (
       <View className="flex-1 items-center justify-center bg-gray-50 px-8">
         <View className="mb-5 h-20 w-20 items-center justify-center rounded-full bg-amber-100">
-          <Text className="text-3xl font-bold text-amber-600">{'\u2759\u2759'}</Text>
+          <Text className="text-3xl font-bold text-amber-600">{'| |'}</Text>
         </View>
         <Text className="mb-1 text-center text-2xl font-bold text-gray-900">
           Session Paused
@@ -326,8 +341,8 @@ export default function SessionScreen() {
 
         {/* Mini stats */}
         {total > 0 && (
-          <View className="mb-8 flex-row items-center gap-6">
-            <View className="flex-row items-center">
+          <View className="mb-8 flex-row items-center">
+            <View className="mr-6 flex-row items-center">
               <View className="mr-1.5 h-3 w-3 rounded-full bg-green-500" />
               <Text className="text-sm font-semibold text-gray-700">{stats.correct} correct</Text>
             </View>
@@ -338,10 +353,10 @@ export default function SessionScreen() {
           </View>
         )}
 
-        <View className="w-full gap-3">
+        <View className="w-full">
           <Pressable
             onPress={() => sessionManager.resume()}
-            className="rounded-2xl bg-blue-500 py-4 active:bg-blue-600"
+            className="mb-3 rounded-2xl bg-blue-500 py-4 active:bg-blue-600"
           >
             <Text className="text-center text-base font-bold text-white">Resume Session</Text>
           </Pressable>
@@ -412,8 +427,18 @@ export default function SessionScreen() {
         {/* Question card */}
         {currentCard && (
           <Animated.View
-            style={{ opacity: cardFade }}
-            className="mb-4 rounded-2xl border border-gray-200 bg-white p-5 shadow-sm"
+            style={[
+              {
+                opacity: cardFade,
+                marginBottom: 16,
+                borderRadius: 16,
+                borderWidth: 1,
+                borderColor: '#e5e7eb',
+                backgroundColor: '#ffffff',
+                padding: 20,
+              },
+              Platform.OS === 'android' ? { elevation: 1 } : {},
+            ]}
           >
             <Text className="mb-2 text-xs font-semibold uppercase tracking-widest text-blue-500">
               Question
@@ -425,11 +450,13 @@ export default function SessionScreen() {
         )}
 
         {/* Phase indicator */}
-        <View className="mb-4 flex-row items-center gap-4">
-          <PulsingIndicator
-            active={sessionPhase === 'awaiting_answer' || sessionPhase === 'asking_question'}
-            color={phaseVisual.color}
-          />
+        <View className="mb-4 flex-row items-center">
+          <View className="mr-4">
+            <PulsingIndicator
+              active={sessionPhase === 'awaiting_answer' || sessionPhase === 'asking_question'}
+              color={phaseVisual.color}
+            />
+          </View>
           <View>
             <Text className="text-base font-bold text-gray-800">
               {phaseVisual.label}
@@ -445,11 +472,11 @@ export default function SessionScreen() {
       </View>
 
       {/* Bottom controls */}
-      <View className="bg-white px-5 pb-6 pt-3 shadow-sm">
-        <View className="flex-row gap-3">
+      <View className="bg-white px-5 pb-6 pt-3" style={Platform.OS === 'android' ? { elevation: 2 } : {}}>
+        <View className="flex-row">
           <Pressable
             onPress={() => sessionManager.pause()}
-            className="flex-1 rounded-2xl border-2 border-gray-200 bg-white py-3.5 active:bg-gray-50"
+            className="mr-3 flex-1 rounded-2xl border-2 border-gray-200 bg-white py-3.5 active:bg-gray-50"
           >
             <Text className="text-center text-sm font-bold text-gray-700">Pause</Text>
           </Pressable>
