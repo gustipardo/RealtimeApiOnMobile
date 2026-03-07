@@ -62,13 +62,12 @@ class ExpoForegroundAudioModule : Module() {
     }
 
     AsyncFunction("abandonAudioFocus") {
-      if (!ForegroundAudioService.isRunning) {
-        return@AsyncFunction
+      if (ForegroundAudioService.isRunning) {
+        val intent = Intent(context, ForegroundAudioService::class.java).apply {
+          action = ForegroundAudioService.ACTION_ABANDON_AUDIO_FOCUS
+        }
+        context.startService(intent)
       }
-      val intent = Intent(context, ForegroundAudioService::class.java).apply {
-        action = ForegroundAudioService.ACTION_ABANDON_AUDIO_FOCUS
-      }
-      context.startService(intent)
     }
   }
 
