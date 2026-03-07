@@ -56,6 +56,7 @@ class AudioFocusManager(
       audioManager.abandonAudioFocus(this)
     }
     audioManager.mode = AudioManager.MODE_NORMAL
+    resumeOnFocusGain = false
   }
 
   override fun onAudioFocusChange(focusChange: Int) {

@@ -20,6 +20,8 @@ class ForegroundAudioService : Service() {
     const val ACTION_END = "expo.modules.foregroundaudio.ACTION_END"
     const val ACTION_STOP = "expo.modules.foregroundaudio.ACTION_STOP"
     const val ACTION_UPDATE = "expo.modules.foregroundaudio.ACTION_UPDATE"
+    const val ACTION_REQUEST_AUDIO_FOCUS = "expo.modules.foregroundaudio.ACTION_REQUEST_AUDIO_FOCUS"
+    const val ACTION_ABANDON_AUDIO_FOCUS = "expo.modules.foregroundaudio.ACTION_ABANDON_AUDIO_FOCUS"
 
     const val EXTRA_TITLE = "title"
     const val EXTRA_BODY = "body"
@@ -95,9 +97,29 @@ class ForegroundAudioService : Service() {
         currentBody = intent.getStringExtra(EXTRA_BODY) ?: currentBody
         updateNotification()
       }
+
+      ACTION_REQUEST_AUDIO_FOCUS -> {
+        if (audioFocusManager == null) {
+          audioFocusManager = AudioFocusManager(this) { state ->
+            moduleRef?.emitAudioFocusChange(state)
+          }
+        }
+        audioFocusManager?.requestFocus()
+      }
+
+      ACTION_ABANDON_AUDIO_FOCUS -> {
+        audioFocusManager?.abandonFocus()
+      }
     }
 
     return START_STICKY
+  }
+
+  override fun onTaskRemoved(rootIntent: Intent?) {
+    // App swiped from recents — clean up gracefully
+    audioFocusManager?.abandonFocus()
+    stopSelf()
+    super.onTaskRemoved(rootIntent)
   }
 
   override fun onDestroy() {

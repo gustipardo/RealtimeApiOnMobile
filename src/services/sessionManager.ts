@@ -5,7 +5,7 @@ import { useSettingsStore } from '../stores/useSettingsStore';
 import { useConnectionStore } from '../stores/useConnectionStore';
 import { ankiBridge } from '../native/ankiBridge';
 import { getSystemPrompt, allTools, getInitialMessage, formatToolResult } from '../config/prompts';
-import { startForegroundService, stopForegroundService, updateForegroundNotification } from './foregroundAudioService';
+import { startForegroundService, stopForegroundService, updateForegroundNotification, requestAudioFocus, clearAudioFocusPauseFlag } from './foregroundAudioService';
 
 /**
  * Session Manager - Orchestrates the study session
@@ -35,7 +35,12 @@ class SessionManager {
         await webrtcManager.connect();
       }
 
-      // 2. Load cards from AnkiDroid
+      // 2. Mute microphone while we configure the session.
+      //    This prevents the server-side VAD from triggering an AI
+      //    response before our system prompt and card data are in place.
+      webrtcManager.setMicrophoneMuted(true);
+
+      // 3. Load cards from AnkiDroid
       transitionTo('loading_cards', 'startSession');
       const cards = await loadDueCards(selectedDeck);
 
@@ -44,21 +49,24 @@ class SessionManager {
         throw new Error('No cards due for review in this deck');
       }
 
-      // 3. Configure AI session
+      // 4. Configure AI session and wait for server acknowledgement
       transitionTo('ready', 'cards_loaded');
-      this.configureAISession(selectedDeck, cards.length);
+      await this.configureAISession(selectedDeck, cards.length);
 
-      // 4. Register event handlers
+      // 5. Register event handlers
       this.registerEventHandlers();
 
-      // 5. Send first card to AI
+      // 6. Send first card to AI
       const firstCard = getCurrentCard();
       if (firstCard) {
         this.sendFirstCard(firstCard.front, firstCard.back);
         transitionTo('asking_question', 'first_card_sent');
       }
 
-      // 6. Start foreground service for background audio
+      // 7. Unmute microphone now that the session is fully configured
+      webrtcManager.setMicrophoneMuted(false);
+
+      // 8. Start foreground service for background audio
       try {
         await startForegroundService(
           'Voice Study Session',
@@ -76,15 +84,17 @@ class SessionManager {
   }
 
   /**
-   * Configure AI session with system prompt and tools
+   * Configure AI session with system prompt and tools.
+   * Waits for the server to acknowledge the update before resolving.
    */
-  private configureAISession(deckName: string, cardCount: number): void {
+  private async configureAISession(deckName: string, cardCount: number): Promise<void> {
     const systemPrompt = getSystemPrompt(deckName, cardCount);
 
-    webrtcManager.updateSession({
+    await webrtcManager.updateSession({
       instructions: systemPrompt,
       tools: allTools,
       modalities: ['text', 'audio'],
+      turn_detection: { type: 'server_vad' },
     });
   }
 
@@ -348,6 +358,11 @@ class SessionManager {
   resume(): void {
     const { transitionTo } = useSessionStore.getState();
     webrtcManager.setMicrophoneMuted(false);
+    clearAudioFocusPauseFlag();
+    // Re-request audio focus in case it was lost (e.g., after a phone call)
+    requestAudioFocus().catch((err) => {
+      console.warn('[SessionManager] Failed to re-request audio focus:', err);
+    });
     transitionTo('asking_question', 'user_resumed');
   }
 }

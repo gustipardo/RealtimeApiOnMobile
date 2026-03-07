@@ -12,6 +12,8 @@ import { webrtcManager } from './webrtcManager';
  */
 
 let listenersRegistered = false;
+/** Tracks whether the session was paused due to audio focus loss (vs user-initiated pause). */
+let pausedByAudioFocusLoss = false;
 
 /**
  * Start the foreground service with a notification.
@@ -47,6 +49,36 @@ export function isServiceRunning(): boolean {
 }
 
 /**
+ * Re-request audio focus. Call when manually resuming after an audio focus loss.
+ */
+export async function requestAudioFocus(): Promise<void> {
+  if (ExpoForegroundAudioModule.isServiceRunning()) {
+    await ExpoForegroundAudioModule.requestAudioFocus();
+  }
+}
+
+/**
+ * Abandon audio focus explicitly (rarely needed — stopService does this automatically).
+ */
+export async function abandonAudioFocus(): Promise<void> {
+  await ExpoForegroundAudioModule.abandonAudioFocus();
+}
+
+/**
+ * Whether the current pause was caused by audio focus loss.
+ */
+export function wasPausedByAudioFocusLoss(): boolean {
+  return pausedByAudioFocusLoss;
+}
+
+/**
+ * Clear the audio-focus-loss pause flag (call when user manually resumes).
+ */
+export function clearAudioFocusPauseFlag(): void {
+  pausedByAudioFocusLoss = false;
+}
+
+/**
  * Register event listeners for notification actions and audio focus changes.
  * Only registers once — subsequent calls are no-ops.
  */
@@ -66,6 +98,9 @@ function registerListeners(): void {
 
       case 'resume':
         webrtcManager.setMicrophoneMuted(false);
+        pausedByAudioFocusLoss = false;
+        // Re-request audio focus when resuming from notification
+        ExpoForegroundAudioModule.requestAudioFocus().catch(() => {});
         transitionTo('asking_question', 'notification_resume');
         break;
 
@@ -86,6 +121,7 @@ function registerListeners(): void {
         // Phone call or alarm — mute mic, keep WebRTC connection alive
         webrtcManager.setMicrophoneMuted(true);
         if (phase !== 'paused') {
+          pausedByAudioFocusLoss = true;
           transitionTo('paused', 'audio_focus_loss_transient');
         }
         break;
@@ -93,7 +129,8 @@ function registerListeners(): void {
       case 'gain':
         // Regained focus — unmute mic, resume if was paused by focus loss
         webrtcManager.setMicrophoneMuted(false);
-        if (phase === 'paused') {
+        if (phase === 'paused' && pausedByAudioFocusLoss) {
+          pausedByAudioFocusLoss = false;
           transitionTo('asking_question', 'audio_focus_gain');
         }
         break;
@@ -102,6 +139,7 @@ function registerListeners(): void {
         // Permanent loss — pause session, do NOT auto-resume
         webrtcManager.setMicrophoneMuted(true);
         if (phase !== 'paused' && phase !== 'idle' && phase !== 'session_complete') {
+          pausedByAudioFocusLoss = true;
           transitionTo('paused', 'audio_focus_loss');
         }
         break;
@@ -110,6 +148,7 @@ function registerListeners(): void {
         // Can lower volume — for voice communication we still pause
         webrtcManager.setMicrophoneMuted(true);
         if (phase !== 'paused') {
+          pausedByAudioFocusLoss = true;
           transitionTo('paused', 'audio_focus_duck');
         }
         break;

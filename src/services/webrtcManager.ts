@@ -197,22 +197,42 @@ class WebRTCManager {
   }
 
   /**
-   * Update session configuration
+   * Update session configuration.
+   * Returns a promise that resolves when the server acknowledges the update.
    */
   updateSession(config: {
     instructions?: string;
     tools?: any[];
     modalities?: string[];
-  }): void {
-    this.sendEvent({
-      type: 'session.update',
-      session: {
-        modalities: config.modalities || ['text', 'audio'],
-        instructions: config.instructions,
-        input_audio_transcription: { model: 'whisper-1' },
-        tools: config.tools || [],
-        tool_choice: 'auto',
-      },
+    turn_detection?: any;
+  }): Promise<void> {
+    return new Promise((resolve, reject) => {
+      const timeout = setTimeout(() => {
+        this.off('session.updated', handler);
+        reject(new Error('session.update acknowledgement timeout'));
+      }, 10000);
+
+      const handler = () => {
+        clearTimeout(timeout);
+        this.off('session.updated', handler);
+        resolve();
+      };
+
+      this.on('session.updated', handler);
+
+      this.sendEvent({
+        type: 'session.update',
+        session: {
+          modalities: config.modalities || ['text', 'audio'],
+          instructions: config.instructions,
+          input_audio_transcription: { model: 'whisper-1' },
+          turn_detection: config.turn_detection !== undefined
+            ? config.turn_detection
+            : { type: 'server_vad' },
+          tools: config.tools || [],
+          tool_choice: 'auto',
+        },
+      });
     });
   }
 

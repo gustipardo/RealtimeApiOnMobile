@@ -10,6 +10,8 @@ interface ExpoForegroundAudioInterface extends NativeModule<ForegroundAudioEvent
   stopService(): Promise<void>;
   updateNotification(title: string, body: string): Promise<void>;
   isServiceRunning(): boolean;
+  requestAudioFocus(): Promise<void>;
+  abandonAudioFocus(): Promise<void>;
 }
 
 const ExpoForegroundAudioModule =

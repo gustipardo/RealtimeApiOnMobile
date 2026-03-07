@@ -1,5 +1,5 @@
-import { useEffect, useState, useCallback } from 'react';
-import { View, Text, Pressable, ActivityIndicator } from 'react-native';
+import { useEffect, useState, useCallback, useRef } from 'react';
+import { View, Text, Pressable, ActivityIndicator, Animated } from 'react-native';
 import { useRouter } from 'expo-router';
 import { useConnectionStore } from '../../stores/useConnectionStore';
 import { useSessionStore } from '../../stores/useSessionStore';
@@ -8,6 +8,136 @@ import { useSettingsStore } from '../../stores/useSettingsStore';
 import { sessionManager } from '../../services/sessionManager';
 import { CardDisplay } from '../../components/CardDisplay';
 
+// ---------------------------------------------------------------------------
+// Pulsing mic indicator component
+// ---------------------------------------------------------------------------
+function PulsingIndicator({ active, color }: { active: boolean; color: string }) {
+  const pulseAnim = useRef(new Animated.Value(1)).current;
+
+  useEffect(() => {
+    if (active) {
+      const loop = Animated.loop(
+        Animated.sequence([
+          Animated.timing(pulseAnim, { toValue: 1.25, duration: 800, useNativeDriver: true }),
+          Animated.timing(pulseAnim, { toValue: 1, duration: 800, useNativeDriver: true }),
+        ]),
+      );
+      loop.start();
+      return () => loop.stop();
+    } else {
+      pulseAnim.setValue(1);
+    }
+  }, [active]);
+
+  const bgMap: Record<string, string> = {
+    blue: 'bg-blue-500',
+    green: 'bg-green-500',
+    amber: 'bg-amber-500',
+    red: 'bg-red-500',
+    gray: 'bg-gray-400',
+  };
+
+  return (
+    <View className="items-center justify-center" style={{ width: 56, height: 56 }}>
+      {active && (
+        <Animated.View
+          className={`absolute h-14 w-14 rounded-full ${bgMap[color] ?? 'bg-blue-500'}`}
+          style={{ opacity: 0.25, transform: [{ scale: pulseAnim }] }}
+        />
+      )}
+      <View className={`h-12 w-12 items-center justify-center rounded-full ${bgMap[color] ?? 'bg-blue-500'}`}>
+        <Text className="text-xl text-white">{getPhaseIcon(color)}</Text>
+      </View>
+    </View>
+  );
+}
+
+function getPhaseIcon(color: string): string {
+  switch (color) {
+    case 'blue': return '\u{1F50A}';   // speaker
+    case 'green': return '\u{1F3A4}';  // mic
+    case 'amber': return '\u{2026}';   // ellipsis
+    default: return '\u{1F4AC}';       // speech
+  }
+}
+
+// ---------------------------------------------------------------------------
+// Connection badge
+// ---------------------------------------------------------------------------
+function ConnectionBadge() {
+  const connectionState = useConnectionStore((s) => s.connectionState);
+  const networkStatus = useConnectionStore((s) => s.networkStatus);
+
+  const isOnline = networkStatus === 'online';
+  const isConnected = connectionState === 'connected';
+  const isReconnecting = connectionState === 'reconnecting';
+
+  let dotColor = 'bg-green-500';
+  let label = 'Connected';
+
+  if (!isOnline) {
+    dotColor = 'bg-red-500';
+    label = 'Offline';
+  } else if (isReconnecting) {
+    dotColor = 'bg-amber-500';
+    label = 'Reconnecting...';
+  } else if (!isConnected) {
+    dotColor = 'bg-gray-400';
+    label = 'Disconnected';
+  }
+
+  return (
+    <View className="flex-row items-center rounded-full bg-gray-100 px-3 py-1.5">
+      <View className={`mr-2 h-2.5 w-2.5 rounded-full ${dotColor}`} />
+      <Text className="text-xs font-medium text-gray-600">{label}</Text>
+    </View>
+  );
+}
+
+// ---------------------------------------------------------------------------
+// Progress ring (simple bar alternative showing fraction)
+// ---------------------------------------------------------------------------
+function ProgressHeader({
+  currentIndex,
+  totalCards,
+  stats,
+}: {
+  currentIndex: number;
+  totalCards: number;
+  stats: { correct: number; incorrect: number };
+}) {
+  const progress = totalCards > 0 ? (currentIndex / totalCards) * 100 : 0;
+
+  return (
+    <View>
+      {/* Progress bar */}
+      <View className="h-1.5 w-full bg-gray-200">
+        <View className="h-1.5 rounded-r-full bg-blue-500" style={{ width: `${progress}%` }} />
+      </View>
+
+      {/* Stats row */}
+      <View className="flex-row items-center justify-between px-5 py-2.5">
+        <Text className="text-xs font-medium text-gray-500">
+          {currentIndex} / {totalCards} cards
+        </Text>
+        <View className="flex-row items-center gap-4">
+          <View className="flex-row items-center">
+            <View className="mr-1.5 h-2.5 w-2.5 rounded-full bg-green-500" />
+            <Text className="text-xs font-bold text-green-700">{stats.correct}</Text>
+          </View>
+          <View className="flex-row items-center">
+            <View className="mr-1.5 h-2.5 w-2.5 rounded-full bg-red-500" />
+            <Text className="text-xs font-bold text-red-700">{stats.incorrect}</Text>
+          </View>
+        </View>
+      </View>
+    </View>
+  );
+}
+
+// ---------------------------------------------------------------------------
+// Main session screen
+// ---------------------------------------------------------------------------
 export default function SessionScreen() {
   const router = useRouter();
   const connectionState = useConnectionStore((s) => s.connectionState);
@@ -19,6 +149,15 @@ export default function SessionScreen() {
   const currentIndex = useCardCacheStore((s) => s.currentIndex);
 
   const [error, setError] = useState<string | null>(null);
+
+  // Card fade-in animation
+  const cardFade = useRef(new Animated.Value(1)).current;
+  useEffect(() => {
+    if (currentCard) {
+      cardFade.setValue(0);
+      Animated.timing(cardFade, { toValue: 1, duration: 250, useNativeDriver: true }).start();
+    }
+  }, [currentCard?.cardId]);
 
   const handleStartSession = useCallback(async () => {
     try {
@@ -46,255 +185,311 @@ export default function SessionScreen() {
     }
 
     return () => {
-      // Cleanup on unmount
       if (sessionPhase !== 'idle' && sessionPhase !== 'session_complete') {
         sessionManager.endSession();
       }
     };
   }, []);
 
+  // -------------------------------------------------------------------------
   // Loading states
+  // -------------------------------------------------------------------------
   if (sessionPhase === 'connecting' || sessionPhase === 'loading_cards') {
     return (
-      <View className="flex-1 items-center justify-center bg-white px-6">
-        <ActivityIndicator size="large" color="#3b82f6" />
-        <Text className="mt-4 text-lg text-gray-600">
-          {sessionPhase === 'connecting' ? 'Connecting to AI Tutor...' : 'Loading cards...'}
+      <View className="flex-1 items-center justify-center bg-gray-50 px-8">
+        <View className="mb-6 h-20 w-20 items-center justify-center rounded-full bg-blue-100">
+          <ActivityIndicator size="large" color="#3b82f6" />
+        </View>
+        <Text className="text-center text-xl font-bold text-gray-900">
+          {sessionPhase === 'connecting' ? 'Connecting to AI Tutor' : 'Loading Cards'}
         </Text>
-        <Text className="mt-2 text-sm text-gray-400">
-          {selectedDeck}
+        <Text className="mt-2 text-center text-sm text-gray-500">
+          {sessionPhase === 'connecting'
+            ? 'Setting up your voice session...'
+            : `Fetching cards from ${selectedDeck}...`}
         </Text>
       </View>
     );
   }
 
+  // -------------------------------------------------------------------------
   // Error state
+  // -------------------------------------------------------------------------
   if (sessionPhase === 'error' || error) {
     return (
-      <View className="flex-1 items-center justify-center bg-white px-6">
-        <View className="mb-4 h-20 w-20 items-center justify-center rounded-full bg-red-100">
-          <Text className="text-4xl">❌</Text>
+      <View className="flex-1 items-center justify-center bg-gray-50 px-8">
+        <View className="mb-5 h-20 w-20 items-center justify-center rounded-full bg-red-100">
+          <Text className="text-3xl font-bold text-red-500">{'\u0021'}</Text>
         </View>
         <Text className="mb-2 text-center text-xl font-bold text-gray-900">
-          Session Error
+          Something Went Wrong
         </Text>
-        <Text className="mb-6 text-center text-base text-gray-600">
-          {error || 'Something went wrong. Please try again.'}
+        <Text className="mb-8 text-center text-base leading-relaxed text-gray-500">
+          {error || 'An unexpected error occurred. Please try again.'}
         </Text>
         <View className="w-full gap-3">
           <Pressable
             onPress={handleRetry}
-            className="rounded-xl bg-blue-500 px-6 py-4 active:bg-blue-600"
+            className="rounded-2xl bg-blue-500 py-4 active:bg-blue-600"
           >
-            <Text className="text-center text-lg font-semibold text-white">
-              Try Again
-            </Text>
+            <Text className="text-center text-base font-bold text-white">Try Again</Text>
           </Pressable>
           <Pressable
             onPress={handleEndSession}
-            className="rounded-xl border-2 border-gray-300 px-6 py-4 active:bg-gray-100"
+            className="rounded-2xl border-2 border-gray-200 bg-white py-4 active:bg-gray-50"
           >
-            <Text className="text-center text-lg font-semibold text-gray-700">
-              Go Back
-            </Text>
+            <Text className="text-center text-base font-semibold text-gray-700">Go Back</Text>
           </Pressable>
         </View>
       </View>
     );
   }
 
+  // -------------------------------------------------------------------------
   // Session complete state
+  // -------------------------------------------------------------------------
   if (sessionPhase === 'session_complete') {
     const total = stats.correct + stats.incorrect;
     const percentage = total > 0 ? Math.round((stats.correct / total) * 100) : 0;
 
     return (
-      <View className="flex-1 items-center justify-center bg-white px-6">
-        <View className="mb-6 h-24 w-24 items-center justify-center rounded-full bg-green-100">
-          <Text className="text-5xl">🎉</Text>
-        </View>
-        <Text className="mb-2 text-center text-2xl font-bold text-gray-900">
-          Session Complete!
-        </Text>
-        <Text className="mb-6 text-center text-base text-gray-600">
-          Great work studying {selectedDeck}
-        </Text>
-
-        {/* Stats */}
-        <View className="mb-8 w-full rounded-xl bg-gray-100 p-4">
-          <View className="mb-3 flex-row justify-between">
-            <Text className="text-gray-600">Cards Reviewed</Text>
-            <Text className="font-bold text-gray-900">{total}</Text>
+      <View className="flex-1 bg-gray-50 px-6 pt-20">
+        {/* Top illustration */}
+        <View className="items-center">
+          <View className="mb-5 h-24 w-24 items-center justify-center rounded-full bg-green-100">
+            <Text className="text-center text-4xl font-bold text-green-600">{'\u2713'}</Text>
           </View>
-          <View className="mb-3 flex-row justify-between">
-            <Text className="text-green-600">Correct</Text>
-            <Text className="font-bold text-green-600">{stats.correct}</Text>
-          </View>
-          <View className="mb-3 flex-row justify-between">
-            <Text className="text-red-600">Incorrect</Text>
-            <Text className="font-bold text-red-600">{stats.incorrect}</Text>
-          </View>
-          <View className="flex-row justify-between border-t border-gray-300 pt-3">
-            <Text className="text-gray-600">Accuracy</Text>
-            <Text className="font-bold text-gray-900">{percentage}%</Text>
-          </View>
-        </View>
-
-        <Pressable
-          onPress={handleEndSession}
-          className="w-full rounded-xl bg-blue-500 px-6 py-4 active:bg-blue-600"
-        >
-          <Text className="text-center text-lg font-semibold text-white">
-            Done
+          <Text className="mb-1 text-center text-2xl font-bold text-gray-900">
+            Session Complete
           </Text>
-        </Pressable>
-      </View>
-    );
-  }
-
-  // Paused state
-  if (sessionPhase === 'paused') {
-    return (
-      <View className="flex-1 items-center justify-center bg-white px-6">
-        <View className="mb-6 h-24 w-24 items-center justify-center rounded-full bg-yellow-100">
-          <Text className="text-5xl">⏸</Text>
+          <Text className="mb-8 text-center text-base text-gray-500">
+            {selectedDeck}
+          </Text>
         </View>
-        <Text className="mb-2 text-center text-2xl font-bold text-gray-900">
-          Session Paused
-        </Text>
-        <Text className="mb-8 text-center text-base text-gray-600">
-          Resume from here or from the notification bar.
-        </Text>
-        <View className="w-full gap-3">
-          <Pressable
-            onPress={() => sessionManager.resume()}
-            className="rounded-xl bg-blue-500 px-6 py-4 active:bg-blue-600"
-          >
-            <Text className="text-center text-lg font-semibold text-white">
-              Resume Session
-            </Text>
-          </Pressable>
+
+        {/* Stats card */}
+        <View className="rounded-2xl border border-gray-200 bg-white p-5">
+          {/* Accuracy ring placeholder */}
+          <View className="mb-5 items-center">
+            <View className="h-24 w-24 items-center justify-center rounded-full border-4 border-blue-500 bg-blue-50">
+              <Text className="text-2xl font-bold text-blue-600">{percentage}%</Text>
+            </View>
+            <Text className="mt-2 text-sm font-medium text-gray-500">Accuracy</Text>
+          </View>
+
+          <View className="flex-row justify-around">
+            <View className="items-center">
+              <Text className="text-2xl font-bold text-gray-900">{total}</Text>
+              <Text className="text-xs font-medium text-gray-500">Reviewed</Text>
+            </View>
+            <View className="items-center">
+              <Text className="text-2xl font-bold text-green-600">{stats.correct}</Text>
+              <Text className="text-xs font-medium text-green-600">Correct</Text>
+            </View>
+            <View className="items-center">
+              <Text className="text-2xl font-bold text-red-600">{stats.incorrect}</Text>
+              <Text className="text-xs font-medium text-red-600">Incorrect</Text>
+            </View>
+          </View>
+        </View>
+
+        {/* Done button */}
+        <View className="mt-auto pb-8 pt-6">
           <Pressable
             onPress={handleEndSession}
-            className="rounded-xl border-2 border-red-300 px-6 py-4 active:bg-red-50"
+            className="rounded-2xl bg-blue-500 py-4 active:bg-blue-600"
           >
-            <Text className="text-center text-lg font-semibold text-red-600">
-              End Session
-            </Text>
+            <Text className="text-center text-base font-bold text-white">Done</Text>
           </Pressable>
         </View>
       </View>
     );
   }
 
-  // Active session UI
-  const remainingCards = cards.length - currentIndex;
+  // -------------------------------------------------------------------------
+  // Paused state
+  // -------------------------------------------------------------------------
+  if (sessionPhase === 'paused') {
+    const total = stats.correct + stats.incorrect;
 
-  return (
-    <View className="flex-1 bg-white">
-      {/* Header */}
-      <View className="border-b border-gray-200 px-6 pb-4 pt-16">
-        <View className="flex-row items-center justify-between">
-          <View>
-            <Text className="text-xl font-bold text-gray-900">Study Session</Text>
-            <Text className="text-sm text-gray-500">{selectedDeck}</Text>
-          </View>
-          <View className="items-end">
-            <View className="flex-row items-center">
-              <View className="mr-2 h-3 w-3 rounded-full bg-green-500" />
-              <Text className="text-sm text-green-600">Connected</Text>
-            </View>
-            <Text className="text-xs text-gray-400">
-              {remainingCards} cards remaining
-            </Text>
-          </View>
+    return (
+      <View className="flex-1 items-center justify-center bg-gray-50 px-8">
+        <View className="mb-5 h-20 w-20 items-center justify-center rounded-full bg-amber-100">
+          <Text className="text-3xl font-bold text-amber-600">{'\u2759\u2759'}</Text>
         </View>
-      </View>
+        <Text className="mb-1 text-center text-2xl font-bold text-gray-900">
+          Session Paused
+        </Text>
+        <Text className="mb-3 text-center text-sm text-gray-500">
+          {selectedDeck}
+        </Text>
 
-      {/* Progress bar */}
-      <View className="h-2 bg-gray-200">
-        <View
-          className="h-2 bg-blue-500"
-          style={{ width: `${((currentIndex) / cards.length) * 100}%` }}
-        />
-      </View>
-
-      {/* Main content area */}
-      <View className="flex-1 px-6 py-6">
-        {/* Card front — main focus */}
-        {currentCard && (
-          <View className="mb-4 w-full rounded-2xl border border-blue-100 bg-blue-50 p-5">
-            <Text className="mb-1 text-xs font-medium uppercase tracking-wide text-blue-400">
-              Question
-            </Text>
-            <Text className="text-2xl font-bold leading-snug text-gray-900">
-              {currentCard.front}
-            </Text>
+        {/* Mini stats */}
+        {total > 0 && (
+          <View className="mb-8 flex-row items-center gap-6">
+            <View className="flex-row items-center">
+              <View className="mr-1.5 h-3 w-3 rounded-full bg-green-500" />
+              <Text className="text-sm font-semibold text-gray-700">{stats.correct} correct</Text>
+            </View>
+            <View className="flex-row items-center">
+              <View className="mr-1.5 h-3 w-3 rounded-full bg-red-500" />
+              <Text className="text-sm font-semibold text-gray-700">{stats.incorrect} incorrect</Text>
+            </View>
           </View>
         )}
 
-        {/* Phase indicator + mic icon */}
-        <View className="mb-4 flex-row items-center gap-3">
-          <View className="h-10 w-10 items-center justify-center rounded-full bg-blue-100">
-            <Text className="text-xl">
-              {sessionPhase === 'awaiting_answer' ? '🎤' : '🔊'}
+        <View className="w-full gap-3">
+          <Pressable
+            onPress={() => sessionManager.resume()}
+            className="rounded-2xl bg-blue-500 py-4 active:bg-blue-600"
+          >
+            <Text className="text-center text-base font-bold text-white">Resume Session</Text>
+          </Pressable>
+          <Pressable
+            onPress={handleEndSession}
+            className="rounded-2xl border-2 border-red-200 bg-white py-4 active:bg-red-50"
+          >
+            <Text className="text-center text-base font-semibold text-red-600">End Session</Text>
+          </Pressable>
+        </View>
+      </View>
+    );
+  }
+
+  // -------------------------------------------------------------------------
+  // Reconnecting state (overlay-style)
+  // -------------------------------------------------------------------------
+  if (sessionPhase === 'reconnecting') {
+    return (
+      <View className="flex-1 items-center justify-center bg-gray-50 px-8">
+        <View className="mb-5 h-20 w-20 items-center justify-center rounded-full bg-amber-100">
+          <ActivityIndicator size="large" color="#f59e0b" />
+        </View>
+        <Text className="mb-1 text-center text-xl font-bold text-gray-900">
+          Reconnecting...
+        </Text>
+        <Text className="mb-8 text-center text-sm text-gray-500">
+          Attempting to restore your session
+        </Text>
+        <Pressable
+          onPress={handleEndSession}
+          className="rounded-2xl border-2 border-gray-200 bg-white px-8 py-3 active:bg-gray-50"
+        >
+          <Text className="text-center text-sm font-semibold text-gray-600">Cancel</Text>
+        </Pressable>
+      </View>
+    );
+  }
+
+  // -------------------------------------------------------------------------
+  // Active session UI
+  // -------------------------------------------------------------------------
+  const phaseVisual = getPhaseVisual(sessionPhase);
+
+  return (
+    <View className="flex-1 bg-gray-50">
+      {/* Top bar */}
+      <View className="bg-white px-5 pb-3 pt-14">
+        <View className="flex-row items-center justify-between">
+          <View className="flex-1 mr-3">
+            <Text className="text-lg font-bold text-gray-900" numberOfLines={1}>
+              {selectedDeck}
             </Text>
           </View>
-          <Text className="text-base font-semibold text-gray-700">
-            {getPhaseLabel(sessionPhase)}
-          </Text>
-        </View>
-
-        {/* Evaluation / correct answer feedback */}
-        <View className="w-full">
-          <CardDisplay />
-        </View>
-
-        {/* Stats during session */}
-        <View className="mt-auto flex-row justify-center gap-10">
-          <View className="items-center">
-            <Text className="text-2xl font-bold text-green-600">{stats.correct}</Text>
-            <Text className="text-xs text-gray-500">Correct</Text>
-          </View>
-          <View className="items-center">
-            <Text className="text-2xl font-bold text-red-600">{stats.incorrect}</Text>
-            <Text className="text-xs text-gray-500">Incorrect</Text>
-          </View>
+          <ConnectionBadge />
         </View>
       </View>
 
+      {/* Progress + stats strip */}
+      <ProgressHeader
+        currentIndex={currentIndex}
+        totalCards={cards.length}
+        stats={stats}
+      />
+
+      {/* Main content */}
+      <View className="flex-1 px-5 pt-4">
+        {/* Question card */}
+        {currentCard && (
+          <Animated.View
+            style={{ opacity: cardFade }}
+            className="mb-4 rounded-2xl border border-gray-200 bg-white p-5 shadow-sm"
+          >
+            <Text className="mb-2 text-xs font-semibold uppercase tracking-widest text-blue-500">
+              Question
+            </Text>
+            <Text className="text-xl font-bold leading-relaxed text-gray-900">
+              {currentCard.front}
+            </Text>
+          </Animated.View>
+        )}
+
+        {/* Phase indicator */}
+        <View className="mb-4 flex-row items-center gap-4">
+          <PulsingIndicator
+            active={sessionPhase === 'awaiting_answer' || sessionPhase === 'asking_question'}
+            color={phaseVisual.color}
+          />
+          <View>
+            <Text className="text-base font-bold text-gray-800">
+              {phaseVisual.label}
+            </Text>
+            <Text className="text-xs text-gray-500">
+              {phaseVisual.hint}
+            </Text>
+          </View>
+        </View>
+
+        {/* Evaluation feedback */}
+        <CardDisplay />
+      </View>
+
       {/* Bottom controls */}
-      <View className="border-t border-gray-200 px-6 py-4">
-        <Pressable
-          onPress={handleEndSession}
-          className="rounded-xl bg-red-500 px-6 py-4 active:bg-red-600"
-        >
-          <Text className="text-center text-lg font-semibold text-white">
-            End Session
-          </Text>
-        </Pressable>
+      <View className="bg-white px-5 pb-6 pt-3 shadow-sm">
+        <View className="flex-row gap-3">
+          <Pressable
+            onPress={() => sessionManager.pause()}
+            className="flex-1 rounded-2xl border-2 border-gray-200 bg-white py-3.5 active:bg-gray-50"
+          >
+            <Text className="text-center text-sm font-bold text-gray-700">Pause</Text>
+          </Pressable>
+          <Pressable
+            onPress={handleEndSession}
+            className="flex-1 rounded-2xl bg-red-500 py-3.5 active:bg-red-600"
+          >
+            <Text className="text-center text-sm font-bold text-white">End Session</Text>
+          </Pressable>
+        </View>
       </View>
     </View>
   );
 }
 
-function getPhaseLabel(phase: string): string {
+// ---------------------------------------------------------------------------
+// Helpers
+// ---------------------------------------------------------------------------
+
+interface PhaseVisual {
+  label: string;
+  hint: string;
+  color: string;
+}
+
+function getPhaseVisual(phase: string): PhaseVisual {
   switch (phase) {
     case 'ready':
-      return 'Ready to start...';
+      return { label: 'Getting Ready', hint: 'Session is starting...', color: 'gray' };
     case 'asking_question':
-      return 'Listen to the question...';
+      return { label: 'Asking Question', hint: 'Listen carefully...', color: 'blue' };
     case 'awaiting_answer':
-      return 'Speak your answer...';
+      return { label: 'Your Turn', hint: 'Speak your answer now', color: 'green' };
     case 'evaluating':
-      return 'Evaluating...';
+      return { label: 'Evaluating', hint: 'Checking your answer...', color: 'amber' };
     case 'giving_feedback':
-      return 'Feedback...';
+      return { label: 'Feedback', hint: 'Listen to the feedback', color: 'blue' };
     case 'advancing':
-      return 'Next card...';
-    case 'paused':
-      return 'Paused';
+      return { label: 'Next Card', hint: 'Moving to the next card...', color: 'gray' };
     default:
-      return 'Studying...';
+      return { label: 'Studying', hint: 'Session in progress', color: 'blue' };
   }
 }

@@ -3,6 +3,9 @@ import {
   stopForegroundService,
   updateForegroundNotification,
   isServiceRunning,
+  requestAudioFocus,
+  abandonAudioFocus,
+  wasPausedByAudioFocusLoss,
 } from '../foregroundAudioService';
 
 // Mock the native module
@@ -11,6 +14,8 @@ const mockStopService = jest.fn().mockResolvedValue(undefined);
 const mockUpdateNotification = jest.fn().mockResolvedValue(undefined);
 const mockIsServiceRunning = jest.fn().mockReturnValue(false);
 const mockAddListener = jest.fn();
+const mockRequestAudioFocus = jest.fn().mockResolvedValue(undefined);
+const mockAbandonAudioFocus = jest.fn().mockResolvedValue(undefined);
 
 jest.mock('expo-foreground-audio', () => ({
   __esModule: true,
@@ -20,6 +25,8 @@ jest.mock('expo-foreground-audio', () => ({
     updateNotification: (...args: any[]) => mockUpdateNotification(...args),
     isServiceRunning: (...args: any[]) => mockIsServiceRunning(...args),
     addListener: (...args: any[]) => mockAddListener(...args),
+    requestAudioFocus: (...args: any[]) => mockRequestAudioFocus(...args),
+    abandonAudioFocus: (...args: any[]) => mockAbandonAudioFocus(...args),
   },
 }));
 
@@ -143,11 +150,12 @@ describe('foregroundAudioService', () => {
       expect(mockTransitionTo).toHaveBeenCalledWith('paused', 'notification_pause');
     });
 
-    it('unmutes mic and transitions to asking_question on "resume" action', () => {
+    it('unmutes mic, re-requests audio focus, and transitions on "resume" action', () => {
       const handler = getListenerCallback('onNotificationAction');
       handler!({ action: 'resume' });
 
       expect(mockSetMicrophoneMuted).toHaveBeenCalledWith(false);
+      expect(mockRequestAudioFocus).toHaveBeenCalled();
       expect(mockTransitionTo).toHaveBeenCalledWith('asking_question', 'notification_resume');
     });
 
@@ -198,18 +206,40 @@ describe('foregroundAudioService', () => {
       expect(mockTransitionTo).not.toHaveBeenCalled();
     });
 
-    it('unmutes mic and resumes on "gain" when paused', () => {
+    it('unmutes mic and resumes on "gain" when paused by audio focus loss', () => {
+      const { useSessionStore } = require('../../stores/useSessionStore');
+      const handler = getListenerCallback('onAudioFocusChange');
+
+      // First trigger a focus loss to set the flag
+      handler!({ state: 'loss_transient' });
+      mockTransitionTo.mockClear();
+      mockSetMicrophoneMuted.mockClear();
+
+      // Now simulate regaining focus while paused
+      useSessionStore.getState.mockReturnValue({
+        phase: 'paused',
+        transitionTo: mockTransitionTo,
+      });
+
+      handler!({ state: 'gain' });
+
+      expect(mockSetMicrophoneMuted).toHaveBeenCalledWith(false);
+      expect(mockTransitionTo).toHaveBeenCalledWith('asking_question', 'audio_focus_gain');
+    });
+
+    it('does not auto-resume on "gain" when paused by user (not by focus loss)', () => {
       const { useSessionStore } = require('../../stores/useSessionStore');
       useSessionStore.getState.mockReturnValue({
         phase: 'paused',
         transitionTo: mockTransitionTo,
       });
 
+      // "gain" without prior focus loss — user paused manually
       const handler = getListenerCallback('onAudioFocusChange');
       handler!({ state: 'gain' });
 
       expect(mockSetMicrophoneMuted).toHaveBeenCalledWith(false);
-      expect(mockTransitionTo).toHaveBeenCalledWith('asking_question', 'audio_focus_gain');
+      expect(mockTransitionTo).not.toHaveBeenCalled();
     });
 
     it('does not transition on "gain" when not paused', () => {
@@ -248,6 +278,27 @@ describe('foregroundAudioService', () => {
 
       expect(mockSetMicrophoneMuted).toHaveBeenCalledWith(true);
       expect(mockTransitionTo).toHaveBeenCalledWith('paused', 'audio_focus_duck');
+    });
+  });
+
+  describe('requestAudioFocus', () => {
+    it('calls native requestAudioFocus when service is running', async () => {
+      mockIsServiceRunning.mockReturnValue(true);
+      await requestAudioFocus();
+      expect(mockRequestAudioFocus).toHaveBeenCalled();
+    });
+
+    it('does not call native requestAudioFocus when service is not running', async () => {
+      mockIsServiceRunning.mockReturnValue(false);
+      await requestAudioFocus();
+      expect(mockRequestAudioFocus).not.toHaveBeenCalled();
+    });
+  });
+
+  describe('abandonAudioFocus', () => {
+    it('calls native abandonAudioFocus', async () => {
+      await abandonAudioFocus();
+      expect(mockAbandonAudioFocus).toHaveBeenCalled();
     });
   });
 });
