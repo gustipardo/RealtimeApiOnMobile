@@ -29,6 +29,7 @@ class ExpoForegroundAudioModule : Module() {
       } else {
         context.startService(intent)
       }
+      Unit
     }
 
     AsyncFunction("stopService") {
@@ -36,6 +37,7 @@ class ExpoForegroundAudioModule : Module() {
         action = ForegroundAudioService.ACTION_STOP
       }
       context.startService(intent)
+      Unit
     }
 
     AsyncFunction("updateNotification") { title: String, body: String ->
@@ -45,6 +47,7 @@ class ExpoForegroundAudioModule : Module() {
         putExtra(ForegroundAudioService.EXTRA_BODY, body)
       }
       context.startService(intent)
+      Unit
     }
 
     Function("isServiceRunning") {
@@ -59,6 +62,7 @@ class ExpoForegroundAudioModule : Module() {
         action = ForegroundAudioService.ACTION_REQUEST_AUDIO_FOCUS
       }
       context.startService(intent)
+      Unit
     }
 
     AsyncFunction("abandonAudioFocus") {
@@ -68,6 +72,7 @@ class ExpoForegroundAudioModule : Module() {
         }
         context.startService(intent)
       }
+      Unit
     }
   }
 

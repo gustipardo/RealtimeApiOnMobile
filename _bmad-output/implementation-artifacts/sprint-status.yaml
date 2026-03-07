@@ -61,13 +61,13 @@ development_status:
   3-6-visual-companion-display: done
   epic-3-retrospective: optional
 
-  epic-4: in-progress
+  epic-4: done
   4-1-android-foreground-service-for-background-audio: done
   4-2-notification-controls: done
-  4-3-audio-focus-management: backlog
+  4-3-audio-focus-management: done
   epic-4-retrospective: optional
 
-  epic-5: backlog
+  epic-5: in-progress
   5-1-network-loss-detection-and-user-notification: backlog
   5-2-auto-reconnect-and-session-resume: backlog
   epic-5-retrospective: optional

@@ -178,7 +178,8 @@ class AnkiDroidModule : Module() {
       }
     }
 
-    // Get cards for a specific deck
+    // Get cards for a specific deck using the cards ContentProvider URI
+    // which supports filtering by deck_id and returns question/answer directly
     AsyncFunction("getDueCards") { deckName: String, promise: Promise ->
       try {
         val hasPermission = ContextCompat.checkSelfPermission(context, ANKIDROID_PERMISSION) == PackageManager.PERMISSION_GRANTED
@@ -199,52 +200,105 @@ class AnkiDroidModule : Module() {
         var cursor: Cursor? = null
 
         try {
-          // Strategy 1: notes/decks/{deckId} — V2 URI (newer AnkiDroid builds only)
-          val deckNotesUri = NOTES_URI.buildUpon()
-            .appendPath("decks")
-            .appendPath(deckId.toString())
-            .build()
-
-          cursor = try {
-            contentResolver.query(deckNotesUri, arrayOf("_id", NOTE_FLDS), null, null, null)
-          } catch (e: Exception) {
-            Log.d(TAG, "getDueCards: V2 URI not supported (${e.message}), using fallback")
+          // Query cards filtered by deck_id — returns only cards belonging to this deck
+          cursor = contentResolver.query(
+            CARDS_URI,
+            null, // all columns (question, answer, _id, etc.)
+            "deck_id=?",
+            arrayOf(deckId.toString()),
             null
-          }
-          Log.d(TAG, "getDueCards: notes/decks/$deckId count=${cursor?.count ?: -1}")
+          )
+          Log.d(TAG, "getDueCards: cards for deck $deckId count=${cursor?.count ?: -1}, columns=${cursor?.columnNames?.joinToString()}")
 
-          // Strategy 2: plain notes URI — always works, returns all notes across all decks
+          // If deck_id filter not supported, try without filter and match manually
           if (cursor == null || cursor.count == 0) {
             cursor?.close()
-            cursor = contentResolver.query(NOTES_URI, null, null, null, null) // null = all columns
-            Log.d(TAG, "getDueCards: fallback all notes count=${cursor?.count ?: -1}, columns=${cursor?.columnNames?.joinToString()}")
+            cursor = contentResolver.query(CARDS_URI, null, null, null, null)
+            Log.d(TAG, "getDueCards: all cards count=${cursor?.count ?: -1}, columns=${cursor?.columnNames?.joinToString()}")
           }
 
           cursor?.let {
             var count = 0
-            val fldsIdx = it.getColumnIndex(NOTE_FLDS)
+            val questionIdx = it.getColumnIndex("question")
+            val answerIdx = it.getColumnIndex("answer")
+            val idIdx = it.getColumnIndex("_id")
+            val deckIdIdx = it.getColumnIndex("deck_id")
 
-            while (it.moveToNext() && count < 100) {
-              val noteId = getColumnLong(it, "_id") ?: continue
-              if (fldsIdx < 0) continue
-              val fields = it.getString(fldsIdx) ?: continue
+            // If cards URI has question/answer columns, use them directly
+            if (questionIdx >= 0 && answerIdx >= 0) {
+              while (it.moveToNext() && count < 100) {
+                // If we couldn't filter by deck_id in the query, filter here
+                if (deckIdIdx >= 0) {
+                  val cardDeckId = it.getLong(deckIdIdx)
+                  if (cardDeckId != deckId) continue
+                }
 
-              // Filter out empty, numeric-only (sequence numbers), and sound-file fields
-              val meaningful = fields.split("\u001f")
-                .map { f -> cleanAnkiText(f) }
-                .filter { f -> f.isNotEmpty() && !f.matches(Regex("\\d+")) && !f.startsWith("[sound:") }
+                val cardId = if (idIdx >= 0) it.getLong(idIdx) else count.toLong()
+                val rawQuestion = it.getString(questionIdx) ?: continue
+                val rawAnswer = it.getString(answerIdx) ?: ""
 
-              val front = meaningful.getOrNull(0) ?: ""
-              val back = meaningful.drop(1).joinToString(" | ")
+                val front = cleanAnkiText(rawQuestion)
+                val back = cleanAnkiText(rawAnswer)
 
-              if (front.isNotEmpty()) {
-                cards.add(mapOf(
-                  "cardId" to noteId,
-                  "front" to front,
-                  "back" to back,
-                  "deckName" to deckName
-                ))
-                count++
+                if (front.isNotEmpty()) {
+                  cards.add(mapOf(
+                    "cardId" to cardId,
+                    "front" to front,
+                    "back" to back,
+                    "deckName" to deckName
+                  ))
+                  count++
+                }
+              }
+            } else {
+              // Fallback: cards URI doesn't have question/answer — use flds from notes
+              // First collect note IDs for this deck's cards
+              val noteIds = mutableSetOf<Long>()
+              val noteIdIdx = it.getColumnIndex("note_id")
+
+              if (noteIdIdx >= 0) {
+                while (it.moveToNext()) {
+                  if (deckIdIdx >= 0) {
+                    val cardDeckId = it.getLong(deckIdIdx)
+                    if (cardDeckId != deckId) continue
+                  }
+                  noteIds.add(it.getLong(noteIdIdx))
+                }
+              }
+              cursor?.close()
+
+              if (noteIds.isNotEmpty()) {
+                // Now query notes for those specific note IDs
+                val notesCursor = contentResolver.query(NOTES_URI, null, null, null, null)
+                notesCursor?.let { nc ->
+                  val fldsIdx = nc.getColumnIndex(NOTE_FLDS)
+                  val nIdIdx = nc.getColumnIndex("_id")
+
+                  while (nc.moveToNext() && count < 100) {
+                    val noteId = if (nIdIdx >= 0) nc.getLong(nIdIdx) else continue
+                    if (noteId !in noteIds) continue
+                    if (fldsIdx < 0) continue
+                    val fields = nc.getString(fldsIdx) ?: continue
+
+                    val meaningful = fields.split("\u001f")
+                      .map { f -> cleanAnkiText(f) }
+                      .filter { f -> f.isNotEmpty() && !f.matches(Regex("\\d+")) && !f.startsWith("[sound:") }
+
+                    val front = meaningful.getOrNull(0) ?: ""
+                    val back = meaningful.drop(1).joinToString(" | ")
+
+                    if (front.isNotEmpty()) {
+                      cards.add(mapOf(
+                        "cardId" to noteId,
+                        "front" to front,
+                        "back" to back,
+                        "deckName" to deckName
+                      ))
+                      count++
+                    }
+                  }
+                  nc.close()
+                }
               }
             }
           }

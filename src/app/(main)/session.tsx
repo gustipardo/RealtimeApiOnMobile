@@ -326,18 +326,32 @@ export default function SessionScreen() {
   // -------------------------------------------------------------------------
   if (sessionPhase === 'paused') {
     const total = stats.correct + stats.incorrect;
+    const isNetworkLoss = connectionState === 'reconnecting' || connectionState === 'failed';
 
     return (
       <View className="flex-1 items-center justify-center bg-gray-50 px-8">
-        <View className="mb-5 h-20 w-20 items-center justify-center rounded-full bg-amber-100">
-          <Text className="text-3xl font-bold text-amber-600">{'| |'}</Text>
+        <View className={`mb-5 h-20 w-20 items-center justify-center rounded-full ${isNetworkLoss ? 'bg-red-100' : 'bg-amber-100'}`}>
+          {isNetworkLoss ? (
+            <Text className="text-3xl font-bold text-red-600">{'!'}</Text>
+          ) : (
+            <Text className="text-3xl font-bold text-amber-600">{'| |'}</Text>
+          )}
         </View>
         <Text className="mb-1 text-center text-2xl font-bold text-gray-900">
-          Session Paused
+          {isNetworkLoss ? 'Connection Lost' : 'Session Paused'}
         </Text>
         <Text className="mb-3 text-center text-sm text-gray-500">
-          {selectedDeck}
+          {isNetworkLoss
+            ? 'Your network connection was interrupted. The session will resume automatically when the connection is restored.'
+            : selectedDeck}
         </Text>
+
+        {/* Connection badge when network lost */}
+        {isNetworkLoss && (
+          <View className="mb-4">
+            <ConnectionBadge />
+          </View>
+        )}
 
         {/* Mini stats */}
         {total > 0 && (
@@ -354,17 +368,21 @@ export default function SessionScreen() {
         )}
 
         <View className="w-full">
-          <Pressable
-            onPress={() => sessionManager.resume()}
-            className="mb-3 rounded-2xl bg-blue-500 py-4 active:bg-blue-600"
-          >
-            <Text className="text-center text-base font-bold text-white">Resume Session</Text>
-          </Pressable>
+          {!isNetworkLoss && (
+            <Pressable
+              onPress={() => sessionManager.resume()}
+              className="mb-3 rounded-2xl bg-blue-500 py-4 active:bg-blue-600"
+            >
+              <Text className="text-center text-base font-bold text-white">Resume Session</Text>
+            </Pressable>
+          )}
           <Pressable
             onPress={handleEndSession}
-            className="rounded-2xl border-2 border-red-200 bg-white py-4 active:bg-red-50"
+            className={`rounded-2xl border-2 ${isNetworkLoss ? 'border-gray-200 bg-white' : 'border-red-200 bg-white'} py-4 ${isNetworkLoss ? 'active:bg-gray-50' : 'active:bg-red-50'}`}
           >
-            <Text className="text-center text-base font-semibold text-red-600">End Session</Text>
+            <Text className={`text-center text-base font-semibold ${isNetworkLoss ? 'text-gray-700' : 'text-red-600'}`}>
+              End Session
+            </Text>
           </Pressable>
         </View>
       </View>

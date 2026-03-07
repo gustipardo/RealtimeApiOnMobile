@@ -11,6 +11,9 @@ import { useConnectionStore } from '../stores/useConnectionStore';
 const OPENAI_REALTIME_URL = 'https://api.openai.com/v1/realtime';
 const REALTIME_MODEL = 'gpt-4o-realtime-preview-2024-12-17';
 
+const MAX_RECONNECT_ATTEMPTS = 3;
+const RECONNECT_BASE_DELAY_MS = 1000;
+
 interface WebRTCManagerState {
   peerConnection: RTCPeerConnection | null;
   localStream: MediaStream | null;
@@ -31,6 +34,23 @@ class WebRTCManager {
   private eventHandlers: Map<string, DataChannelEventHandler[]> = new Map();
 
   /**
+   * Whether the initial connection handshake (ICE + data channel) is still
+   * in progress.  While true the one-shot `waitForIceConnection` promise
+   * owns the `oniceconnectionstatechange` callback, so the persistent
+   * monitor must not overwrite it.
+   */
+  private isInitialConnect = false;
+
+  /** True while a reconnect sequence is in progress. */
+  private isReconnecting = false;
+
+  /**
+   * Callback invoked when the connection drops during an active session.
+   * Set by sessionManager to trigger the reconnect + resume flow.
+   */
+  onConnectionDropped: (() => void) | null = null;
+
+  /**
    * Connect to OpenAI Realtime API via WebRTC
    */
   async connect(): Promise<boolean> {
@@ -38,6 +58,7 @@ class WebRTCManager {
 
     try {
       setConnectionState('connecting');
+      this.isInitialConnect = true;
 
       // 1. Get API key from secure storage
       const apiKey = await getApiKey();
@@ -128,16 +149,67 @@ class WebRTCManager {
       // 11. Wait for data channel to open before resolving
       await this.waitForDataChannel(dataChannel);
 
+      // 12. Install persistent ICE & data-channel monitors
+      this.isInitialConnect = false;
+      this.installConnectionMonitor(peerConnection, dataChannel);
+
       setConnectionState('connected');
       console.log('[WebRTC] Connected to OpenAI Realtime API');
       return true;
 
     } catch (error) {
       console.error('[WebRTC] Connection failed:', error);
+      this.isInitialConnect = false;
       setConnectionState('failed');
-      this.cleanup();
+      this.cleanupConnection();
       throw error;
     }
+  }
+
+  /**
+   * Reconnect to WebRTC with exponential backoff.
+   * Cleans up the old connection but preserves event handlers so that
+   * sessionManager's listeners survive the reconnect.
+   * Returns true if reconnection succeeded, false if all attempts failed.
+   */
+  async reconnect(): Promise<boolean> {
+    if (this.isReconnecting) {
+      console.warn('[WebRTC] Reconnect already in progress, skipping');
+      return false;
+    }
+
+    this.isReconnecting = true;
+    const connStore = useConnectionStore.getState();
+    connStore.setConnectionState('reconnecting');
+    connStore.resetReconnectAttempts();
+
+    for (let attempt = 1; attempt <= MAX_RECONNECT_ATTEMPTS; attempt++) {
+      useConnectionStore.getState().incrementReconnectAttempts();
+      const delay = RECONNECT_BASE_DELAY_MS * Math.pow(2, attempt - 1);
+      console.log(`[WebRTC] Reconnect attempt ${attempt}/${MAX_RECONNECT_ATTEMPTS} in ${delay}ms`);
+
+      await this.sleep(delay);
+
+      // Clean up old connection resources but keep event handlers
+      this.cleanupConnection();
+
+      try {
+        await this.connect();
+        // connect() succeeded — reset counters
+        useConnectionStore.getState().resetReconnectAttempts();
+        this.isReconnecting = false;
+        console.log(`[WebRTC] Reconnected on attempt ${attempt}`);
+        return true;
+      } catch (error) {
+        console.warn(`[WebRTC] Reconnect attempt ${attempt} failed:`, error);
+      }
+    }
+
+    // All attempts exhausted
+    console.error('[WebRTC] All reconnect attempts failed');
+    useConnectionStore.getState().setConnectionState('failed');
+    this.isReconnecting = false;
+    return false;
   }
 
   /**
@@ -186,6 +258,89 @@ class WebRTCManager {
   }
 
   /**
+   * Install persistent monitors on the peer connection and data channel.
+   * These fire after the initial handshake and detect mid-session drops.
+   */
+  private installConnectionMonitor(pc: RTCPeerConnection, dc: any): void {
+    const { setConnectionState, setNetworkStatus } = useConnectionStore.getState();
+
+    // --- ICE connection state monitor ---
+    (pc as any).oniceconnectionstatechange = () => {
+      // Guard: if we are in the initial connect handshake, skip (handled by waitForIceConnection)
+      if (this.isInitialConnect) return;
+
+      const iceState = pc.iceConnectionState;
+      console.log(`[WebRTC] ICE connection state changed: ${iceState}`);
+
+      switch (iceState) {
+        case 'connected':
+        case 'completed':
+          setConnectionState('connected');
+          setNetworkStatus('online');
+          break;
+        case 'disconnected':
+          // ICE disconnected — network may have dropped
+          console.warn('[WebRTC] ICE disconnected — possible network loss');
+          setConnectionState('reconnecting');
+          setNetworkStatus('offline');
+          this.handleConnectionDrop('ICE disconnected');
+          break;
+        case 'failed':
+          console.error('[WebRTC] ICE connection failed');
+          setConnectionState('failed');
+          setNetworkStatus('offline');
+          this.handleConnectionDrop('ICE failed');
+          break;
+        case 'closed':
+          // Only update if we haven't already cleaned up intentionally
+          if (useConnectionStore.getState().connectionState !== 'disconnected') {
+            setConnectionState('disconnected');
+          }
+          break;
+      }
+    };
+
+    // --- Data channel close/error monitor ---
+    (dc as any).onclose = () => {
+      console.warn('[WebRTC] Data channel closed unexpectedly');
+      const currentState = useConnectionStore.getState().connectionState;
+      // Only flag as failed if we weren't intentionally disconnecting
+      if (currentState === 'connected' || currentState === 'reconnecting') {
+        setConnectionState('failed');
+        setNetworkStatus('offline');
+        this.handleConnectionDrop('data channel closed');
+      }
+    };
+
+    // Override onerror to also update connection store
+    (dc as any).onerror = (error: any) => {
+      console.error('[WebRTC] Data channel error:', error);
+      const currentState = useConnectionStore.getState().connectionState;
+      if (currentState === 'connected') {
+        setConnectionState('reconnecting');
+      }
+    };
+  }
+
+  /**
+   * Called when a connection drop is detected by the persistent monitors.
+   * Notifies the session manager via the onConnectionDropped callback so
+   * it can orchestrate reconnect and session resume.
+   */
+  private handleConnectionDrop(reason: string): void {
+    // Don't fire during intentional disconnect or if already reconnecting
+    if (this.isReconnecting) return;
+    const connState = useConnectionStore.getState().connectionState;
+    if (connState === 'disconnected') return;
+
+    console.warn(`[WebRTC] Connection dropped: ${reason}`);
+
+    if (this.onConnectionDropped) {
+      this.onConnectionDropped();
+    }
+  }
+
+  /**
    * Send an event to the server via data channel
    */
   sendEvent(event: any): void {
@@ -220,18 +375,19 @@ class WebRTCManager {
 
       this.on('session.updated', handler);
 
+      // Only include fields that are explicitly provided to avoid
+      // accidentally clearing tools/instructions on partial updates
+      const session: Record<string, any> = {};
+      if (config.modalities !== undefined) session.modalities = config.modalities;
+      if (config.instructions !== undefined) session.instructions = config.instructions;
+      if (config.tools !== undefined) session.tools = config.tools;
+      if (config.turn_detection !== undefined) session.turn_detection = config.turn_detection;
+      if (config.tools !== undefined) session.tool_choice = 'auto';
+      if (config.modalities !== undefined) session.input_audio_transcription = { model: 'whisper-1' };
+
       this.sendEvent({
         type: 'session.update',
-        session: {
-          modalities: config.modalities || ['text', 'audio'],
-          instructions: config.instructions,
-          input_audio_transcription: { model: 'whisper-1' },
-          turn_detection: config.turn_detection !== undefined
-            ? config.turn_detection
-            : { type: 'server_vad' },
-          tools: config.tools || [],
-          tool_choice: 'auto',
-        },
+        session,
       });
     });
   }
@@ -258,9 +414,20 @@ class WebRTCManager {
   }
 
   /**
-   * Send a text message to trigger AI response
+   * Send a text message and trigger AI response.
+   * Waits for the server to confirm the conversation item was created
+   * before requesting a response, preventing race conditions.
    */
-  sendTextMessage(text: string): void {
+  async sendTextMessage(text: string): Promise<void> {
+    // Wait for server confirmation that the item was added to the conversation
+    const itemCreated = new Promise<void>((resolve) => {
+      const handler = () => {
+        this.off('conversation.item.created', handler);
+        resolve();
+      };
+      this.on('conversation.item.created', handler);
+    });
+
     this.sendEvent({
       type: 'conversation.item.create',
       item: {
@@ -269,6 +436,10 @@ class WebRTCManager {
         content: [{ type: 'input_text', text }],
       },
     });
+
+    await itemCreated;
+
+    // Now the item is confirmed in the conversation — safe to request response
     this.sendEvent({ type: 'response.create' });
   }
 
@@ -321,21 +492,31 @@ class WebRTCManager {
   }
 
   /**
-   * Disconnect and cleanup
+   * Remove all handlers for a specific event type
+   */
+  offAll(eventType: string): void {
+    this.eventHandlers.delete(eventType);
+  }
+
+  /**
+   * Disconnect and cleanup (intentional — clears everything including handlers)
    */
   disconnect(): void {
     const setConnectionState = useConnectionStore.getState().setConnectionState;
+    this.onConnectionDropped = null;
+    this.isReconnecting = false;
     this.cleanup();
     setConnectionState('disconnected');
     console.log('[WebRTC] Disconnected');
   }
 
   /**
-   * Cleanup resources
+   * Clean up WebRTC connection resources but PRESERVE event handlers.
+   * Used during reconnect so sessionManager's listeners survive.
    */
-  private cleanup(): void {
+  private cleanupConnection(): void {
     if (this.state.dataChannel) {
-      this.state.dataChannel.close();
+      try { this.state.dataChannel.close(); } catch (_e) { /* ignore */ }
       this.state.dataChannel = null;
     }
 
@@ -345,11 +526,19 @@ class WebRTCManager {
     }
 
     if (this.state.peerConnection) {
-      this.state.peerConnection.close();
+      try { this.state.peerConnection.close(); } catch (_e) { /* ignore */ }
       this.state.peerConnection = null;
     }
 
     this.state.remoteStream = null;
+  }
+
+  /**
+   * Full cleanup — closes connection AND clears all event handlers.
+   * Used on intentional disconnect.
+   */
+  private cleanup(): void {
+    this.cleanupConnection();
     this.eventHandlers.clear();
   }
 
@@ -369,6 +558,11 @@ class WebRTCManager {
         track.enabled = !muted;
       });
     }
+  }
+
+  /** Simple async delay helper */
+  private sleep(ms: number): Promise<void> {
+    return new Promise((resolve) => setTimeout(resolve, ms));
   }
 }
 

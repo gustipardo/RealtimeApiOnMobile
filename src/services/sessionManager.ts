@@ -4,7 +4,7 @@ import { useSessionStore } from '../stores/useSessionStore';
 import { useSettingsStore } from '../stores/useSettingsStore';
 import { useConnectionStore } from '../stores/useConnectionStore';
 import { ankiBridge } from '../native/ankiBridge';
-import { getSystemPrompt, allTools, getInitialMessage, formatToolResult } from '../config/prompts';
+import { getSystemPrompt, allTools, getInitialMessage, getResumeMessage, formatToolResult } from '../config/prompts';
 import { startForegroundService, stopForegroundService, updateForegroundNotification, requestAudioFocus, clearAudioFocusPauseFlag } from './foregroundAudioService';
 
 /**
@@ -12,6 +12,13 @@ import { startForegroundService, stopForegroundService, updateForegroundNotifica
  */
 class SessionManager {
   private toolCallNames: Map<string, string> = new Map();
+  private connectionUnsubscribe: (() => void) | null = null;
+
+  /**
+   * Phase the session was in before a network-loss pause.
+   * Used to decide whether to restore the phase on reconnection.
+   */
+  private phaseBeforeNetworkPause: string | null = null;
 
   /**
    * Start a new study session
@@ -55,6 +62,12 @@ class SessionManager {
 
       // 5. Register event handlers
       this.registerEventHandlers();
+
+      // 5b. Wire up connection drop handler for auto-reconnect
+      this.installConnectionDropHandler();
+
+      // 5c. Subscribe to connection state changes for network-loss detection
+      this.subscribeToConnectionState();
 
       // 6. Send first card to AI, wait for first response, then enable VAD
       const firstCard = getCurrentCard();
@@ -179,6 +192,190 @@ class SessionManager {
         this.toolCallNames.set(item.call_id, item.name);
       }
     });
+  }
+
+  /**
+   * Subscribe to the connection store so the session reacts to network loss.
+   */
+  private subscribeToConnectionState(): void {
+    // Unsubscribe any previous listener (safety)
+    this.unsubscribeFromConnectionState();
+
+    this.connectionUnsubscribe = useConnectionStore.subscribe((state, prevState) => {
+      const { connectionState } = state;
+      const prevConnectionState = prevState.connectionState;
+
+      // Skip if state hasn't actually changed
+      if (connectionState === prevConnectionState) return;
+
+      const { phase } = useSessionStore.getState();
+      const { transitionTo } = useSessionStore.getState();
+
+      // --- Connection lost ---
+      // The onConnectionDropped handler manages full reconnect flow.
+      // This subscriber handles the intermediate state where ICE briefly
+      // goes to 'reconnecting' but may self-recover without needing a
+      // full reconnect. If the phase is already 'reconnecting', the
+      // drop handler is managing the flow — don't interfere.
+      if (connectionState === 'reconnecting' || connectionState === 'failed') {
+        const activePhases = [
+          'asking_question', 'awaiting_answer', 'evaluating',
+          'giving_feedback', 'advancing', 'ready',
+        ];
+        if (activePhases.includes(phase)) {
+          console.warn(`[SessionManager] Connection state -> ${connectionState}, muting mic`);
+          this.phaseBeforeNetworkPause = phase;
+          webrtcManager.setMicrophoneMuted(true);
+          // Don't transition to paused here — let onConnectionDropped
+          // handle the transition to 'reconnecting' phase.
+        }
+      }
+
+      // --- Connection restored (ICE self-recovery) ---
+      // ICE can transition back to 'connected' after a brief 'disconnected'
+      // without needing a full reconnect. In that case the session phase
+      // will still be in a network-paused state with phaseBeforeNetworkPause set.
+      if (connectionState === 'connected' && (prevConnectionState === 'reconnecting' || prevConnectionState === 'failed')) {
+        if (this.phaseBeforeNetworkPause && (phase === 'paused' || phase === 'reconnecting')) {
+          // If phase is 'reconnecting', the resumeAfterReconnect flow
+          // will handle restoration — don't interfere.
+          if (phase === 'paused') {
+            console.log('[SessionManager] ICE self-recovered, resuming session');
+            webrtcManager.setMicrophoneMuted(false);
+            transitionTo(this.phaseBeforeNetworkPause as any, 'connection_restored');
+            this.phaseBeforeNetworkPause = null;
+          }
+        }
+      }
+    });
+  }
+
+  /**
+   * Unsubscribe from connection state changes.
+   */
+  private unsubscribeFromConnectionState(): void {
+    if (this.connectionUnsubscribe) {
+      this.connectionUnsubscribe();
+      this.connectionUnsubscribe = null;
+    }
+  }
+
+  /**
+   * Install a callback on webrtcManager that fires when the connection
+   * drops mid-session. This triggers the full reconnect + resume flow.
+   */
+  private installConnectionDropHandler(): void {
+    webrtcManager.onConnectionDropped = () => {
+      const phase = useSessionStore.getState().phase;
+
+      // Only attempt reconnect if we are in an active study phase
+      const activePhases = [
+        'asking_question', 'awaiting_answer', 'evaluating',
+        'giving_feedback', 'advancing', 'ready', 'paused',
+      ];
+      if (!activePhases.includes(phase)) return;
+
+      console.log('[SessionManager] Connection dropped, starting reconnect flow');
+
+      // Save the phase so we can restore it later
+      if (phase !== 'paused') {
+        this.phaseBeforeNetworkPause = phase;
+      }
+
+      const { transitionTo } = useSessionStore.getState();
+      webrtcManager.setMicrophoneMuted(true);
+      transitionTo('reconnecting', 'connection_dropped');
+
+      // Kick off reconnect asynchronously
+      this.attemptReconnectAndResume();
+    };
+  }
+
+  /**
+   * Attempt to reconnect the WebRTC connection and, on success,
+   * resume the AI session from the current card position.
+   */
+  private async attemptReconnectAndResume(): Promise<void> {
+    const { transitionTo } = useSessionStore.getState();
+
+    const success = await webrtcManager.reconnect();
+
+    if (success) {
+      try {
+        await this.resumeAfterReconnect();
+      } catch (error) {
+        console.error('[SessionManager] Failed to resume session after reconnect:', error);
+        transitionTo('error', 'resume_failed');
+      }
+    } else {
+      console.error('[SessionManager] Reconnect failed, transitioning to error');
+      transitionTo('error', 'reconnect_failed');
+    }
+  }
+
+  /**
+   * Resume the AI session after a successful reconnect.
+   * Re-configures the new AI session with the system prompt, tools,
+   * and the current card so the user can continue where they left off.
+   * Card cache and session stats are still in memory — only the AI
+   * context needs to be re-established.
+   */
+  private async resumeAfterReconnect(): Promise<void> {
+    const { transitionTo } = useSessionStore.getState();
+    const { selectedDeck } = useSettingsStore.getState();
+
+    if (!selectedDeck) {
+      throw new Error('No deck selected for resume');
+    }
+
+    console.log('[SessionManager] Resuming session after reconnect');
+
+    // 1. Mute mic while reconfiguring
+    webrtcManager.setMicrophoneMuted(true);
+
+    // 2. Re-configure AI session (system prompt + tools)
+    const totalCards = getTotalCardCount();
+    await this.configureAISession(selectedDeck, totalCards);
+
+    // 3. Re-register event handlers (they were preserved during reconnect
+    //    via cleanupConnection, but the new data channel dispatches fresh
+    //    events so the handlers are still valid)
+    // Note: event handlers are preserved across reconnect — no need to
+    // re-register them since cleanupConnection() keeps them intact.
+
+    // 4. Send the current card to the new AI session as a resume message
+    const currentCard = getCurrentCard();
+    if (currentCard) {
+      const remainingCards = getRemainingCardCount();
+      const stats = useSessionStore.getState().stats;
+      const resumeMsg = getResumeMessage(
+        currentCard.front,
+        currentCard.back,
+        remainingCards,
+        stats
+      );
+
+      console.log('[SessionManager] Sending resume message to AI');
+      webrtcManager.sendTextMessage(resumeMsg);
+
+      // Wait for AI to finish its resume response
+      await webrtcManager.waitForNextResponseDone();
+
+      console.log('[SessionManager] AI resume response complete, enabling server_vad');
+
+      // Enable server_vad for voice interaction
+      await webrtcManager.updateSession({
+        turn_detection: { type: 'server_vad' },
+      });
+    }
+
+    // 5. Unmute and transition back to active phase
+    webrtcManager.setMicrophoneMuted(false);
+    const restorePhase = this.phaseBeforeNetworkPause || 'awaiting_answer';
+    transitionTo(restorePhase as any, 'reconnect_resumed');
+    this.phaseBeforeNetworkPause = null;
+
+    console.log('[SessionManager] Session resumed after reconnect');
   }
 
   /**
@@ -343,6 +540,9 @@ class SessionManager {
    */
   async endSessionFromNotification(): Promise<void> {
     const { transitionTo } = useSessionStore.getState();
+    this.unsubscribeFromConnectionState();
+    webrtcManager.onConnectionDropped = null;
+    this.phaseBeforeNetworkPause = null;
     transitionTo('session_complete', 'notification_end');
     await this.onSessionComplete();
   }
@@ -353,6 +553,10 @@ class SessionManager {
    */
   endSession(): void {
     const { transitionTo } = useSessionStore.getState();
+
+    this.unsubscribeFromConnectionState();
+    webrtcManager.onConnectionDropped = null;
+    this.phaseBeforeNetworkPause = null;
 
     stopForegroundService().catch((error) => {
       console.warn('[SessionManager] Failed to stop foreground service:', error);

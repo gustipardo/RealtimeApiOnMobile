@@ -129,6 +129,27 @@ Please greet the user briefly and then ask the first question.`;
 }
 
 /**
+ * Get resume message to send to AI after a reconnect.
+ * Tells the AI which card the user is currently on so it can pick up
+ * where the session left off without re-greeting.
+ */
+export function getResumeMessage(
+  frontText: string,
+  backText: string,
+  remainingCards: number,
+  stats: { correct: number; incorrect: number }
+): string {
+  const reviewed = stats.correct + stats.incorrect;
+  return `Session Resumed after a brief connection interruption.
+Progress so far: ${reviewed} cards reviewed (${stats.correct} correct, ${stats.incorrect} incorrect). ${remainingCards} cards remaining.
+
+Current Card Front: "${frontText}"
+Current Card Back: "${backText}"
+
+Please say "We're back! Let's continue." and then ask the question for the current card above. Do NOT re-greet or restart the session.`;
+}
+
+/**
  * Get tool result format
  */
 export function formatToolResult(
