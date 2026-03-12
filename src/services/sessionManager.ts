@@ -1,5 +1,5 @@
 import { webrtcManager } from './webrtcManager';
-import { loadDueCards, getCurrentCard, getNextCard, getRemainingCardCount, getTotalCardCount, clearCards } from './cardLoader';
+import { loadDueCards, getCurrentCard, getNextCard, getRemainingCardCount, getTotalCardCount, clearCards, peekNextCard, peekRemainingAfterAdvance, advanceCacheIndex } from './cardLoader';
 import { useSessionStore } from '../stores/useSessionStore';
 import { useSettingsStore } from '../stores/useSettingsStore';
 import { useConnectionStore } from '../stores/useConnectionStore';
@@ -19,6 +19,13 @@ class SessionManager {
    * Used to decide whether to restore the phase on reconnection.
    */
   private phaseBeforeNetworkPause: string | null = null;
+
+  /**
+   * True when a card has been evaluated but the visual index hasn't
+   * advanced yet.  The advance happens on `response.done` so the
+   * displayed card stays in sync with the AI's speech.
+   */
+  private pendingCardAdvance = false;
 
   /**
    * Start a new study session
@@ -104,7 +111,8 @@ class SessionManager {
    * Waits for the server to acknowledge the update before resolving.
    */
   private async configureAISession(deckName: string, cardCount: number): Promise<void> {
-    const systemPrompt = getSystemPrompt(deckName, cardCount);
+    const { alwaysReadBack } = useSettingsStore.getState();
+    const systemPrompt = getSystemPrompt(deckName, cardCount, alwaysReadBack);
 
     await webrtcManager.updateSession({
       instructions: systemPrompt,
@@ -137,11 +145,11 @@ class SessionManager {
     webrtcManager.sendEvent({ type: 'input_audio_buffer.clear' });
 
     // NOW enable server_vad for ongoing voice interaction
-    // Lower threshold (default 0.5) to be more sensitive to quiet audio
+    // Threshold 0.6 (above default 0.5) to reduce false triggers from ambient noise
     await webrtcManager.updateSession({
       turn_detection: {
         type: 'server_vad',
-        threshold: 0.3,
+        threshold: 0.6,
         prefix_padding_ms: 300,
         silence_duration_ms: 500,
       },
@@ -170,10 +178,16 @@ class SessionManager {
       }
     });
 
-    // Handle AI finished speaking
+    // Handle AI finished speaking — advance card and transition to awaiting_answer
     webrtcManager.on('response.done', () => {
       const phase = useSessionStore.getState().phase;
-      if (phase === 'giving_feedback' || phase === 'asking_question') {
+      if (phase === 'giving_feedback' || phase === 'asking_question' || phase === 'evaluating') {
+        // Advance the visual card now that the AI finished feedback + next question
+        if (this.pendingCardAdvance) {
+          this.pendingCardAdvance = false;
+          useSessionStore.getState().advanceCard();
+          advanceCacheIndex();
+        }
         useSessionStore.getState().transitionTo('awaiting_answer', 'ai_done');
       }
     });
@@ -422,7 +436,7 @@ class SessionManager {
     const { user_response_quality, feedback_text } = args;
     console.log(`[SessionManager] Evaluation: ${user_response_quality} - ${feedback_text}`);
 
-    const { transitionTo, recordAnswer, advanceCard } = useSessionStore.getState();
+    const { transitionTo, recordAnswer } = useSessionStore.getState();
 
     // Get current card's back for feedback
     const currentCard = getCurrentCard();
@@ -434,10 +448,11 @@ class SessionManager {
       transitionTo('evaluating', 'tool_called');
     }
 
-    // Advance to next card
-    advanceCard();
-    const nextCard = getNextCard();
-    const remainingCards = getRemainingCardCount();
+    // Peek at next card WITHOUT advancing — the visual card stays on
+    // the current one while the AI gives feedback. Advance happens
+    // on response.done so card display stays in sync with AI speech.
+    const nextCard = peekNextCard();
+    const remainingCards = peekRemainingAfterAdvance();
     const stats = useSessionStore.getState().stats;
 
     // Format result
@@ -451,9 +466,11 @@ class SessionManager {
     // Send result back to AI
     webrtcManager.sendToolResult(callId, result);
 
-    // Update phase and notification
+    // Stay in 'evaluating' phase — the response.audio.delta handler will
+    // transition to 'giving_feedback', then response.done → 'awaiting_answer'.
     if (nextCard) {
-      transitionTo('asking_question', 'next_card');
+      // Mark that card advance should happen when AI finishes speaking
+      this.pendingCardAdvance = true;
       const total = getTotalCardCount();
       const completed = stats.correct + stats.incorrect;
       updateForegroundNotification(
@@ -461,6 +478,10 @@ class SessionManager {
         `Card ${completed + 1} of ${total}`
       ).catch(() => {}); // Non-fatal
     } else {
+      // No more cards — advance immediately and end session
+      useSessionStore.getState().advanceCard();
+      advanceCacheIndex();
+      this.pendingCardAdvance = false;
       transitionTo('session_complete', 'no_more_cards');
       await this.onSessionComplete();
     }
@@ -552,6 +573,7 @@ class SessionManager {
     this.unsubscribeFromConnectionState();
     webrtcManager.onConnectionDropped = null;
     this.phaseBeforeNetworkPause = null;
+    this.pendingCardAdvance = false;
     transitionTo('session_complete', 'notification_end');
     await this.onSessionComplete();
   }
@@ -566,6 +588,7 @@ class SessionManager {
     this.unsubscribeFromConnectionState();
     webrtcManager.onConnectionDropped = null;
     this.phaseBeforeNetworkPause = null;
+    this.pendingCardAdvance = false;
 
     stopForegroundService().catch((error) => {
       console.warn('[SessionManager] Failed to stop foreground service:', error);

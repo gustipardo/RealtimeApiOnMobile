@@ -46,11 +46,41 @@ export function getNextCard(): AnkiCard | undefined {
 }
 
 /**
+ * Peek at the next card WITHOUT advancing the index.
+ * Used to prepare tool results before the AI finishes speaking.
+ */
+export function peekNextCard(): AnkiCard | undefined {
+  const { cards, currentIndex } = useCardCacheStore.getState();
+  return cards[currentIndex + 1];
+}
+
+/**
  * Get remaining card count.
  */
 export function getRemainingCardCount(): number {
   const { cards, currentIndex } = useCardCacheStore.getState();
   return Math.max(0, cards.length - currentIndex);
+}
+
+/**
+ * Get remaining card count as if we had already advanced by one.
+ * Used to report correct remaining count in tool results before actual advance.
+ */
+export function peekRemainingAfterAdvance(): number {
+  const { cards, currentIndex } = useCardCacheStore.getState();
+  return Math.max(0, cards.length - (currentIndex + 1));
+}
+
+/**
+ * Advance the card cache index by one (without returning the card).
+ * Used to sync the visual card display after the AI finishes speaking.
+ */
+export function advanceCacheIndex(): void {
+  const store = useCardCacheStore.getState();
+  const { cards, currentIndex } = store;
+  if (currentIndex + 1 < cards.length) {
+    useCardCacheStore.setState({ currentIndex: currentIndex + 1 });
+  }
 }
 
 /**

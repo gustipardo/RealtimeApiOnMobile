@@ -6,6 +6,7 @@ import {
   FlatList,
   ActivityIndicator,
   RefreshControl,
+  Switch,
   Platform,
 } from 'react-native';
 import { useRouter } from 'expo-router';
@@ -18,6 +19,8 @@ type LoadingState = 'loading' | 'loaded' | 'error' | 'empty';
 export default function DeckSelectScreen() {
   const router = useRouter();
   const setSelectedDeck = useSettingsStore((s) => s.setSelectedDeck);
+  const alwaysReadBack = useSettingsStore((s) => s.alwaysReadBack);
+  const setAlwaysReadBack = useSettingsStore((s) => s.setAlwaysReadBack);
 
   const [decks, setDecks] = useState<DeckInfo[]>([]);
   const [loadingState, setLoadingState] = useState<LoadingState>('loading');
@@ -135,6 +138,20 @@ export default function DeckSelectScreen() {
           {decks.length} deck{decks.length !== 1 ? 's' : ''}
           {totalDue > 0 ? ` \u00B7 ${totalDue} card${totalDue !== 1 ? 's' : ''} due` : ''}
         </Text>
+      </View>
+
+      {/* Study options */}
+      <View className="mx-4 mt-3 flex-row items-center justify-between rounded-xl border border-gray-200 bg-white px-4 py-3">
+        <View className="flex-1 mr-3">
+          <Text className="text-sm font-semibold text-gray-800">Always read answer</Text>
+          <Text className="text-xs text-gray-400">Read the back of the card after every answer</Text>
+        </View>
+        <Switch
+          value={alwaysReadBack}
+          onValueChange={setAlwaysReadBack}
+          trackColor={{ false: '#d1d5db', true: '#93c5fd' }}
+          thumbColor={alwaysReadBack ? '#3b82f6' : '#f4f4f5'}
+        />
       </View>
 
       <FlatList

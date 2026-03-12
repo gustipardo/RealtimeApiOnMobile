@@ -30,7 +30,7 @@ export const useSessionStore = create<SessionStore>((set) => ({
     })),
 
   advanceCard: () =>
-    set((state) => ({ currentCardIndex: state.currentCardIndex + 1, lastEvaluation: null })),
+    set((state) => ({ currentCardIndex: state.currentCardIndex + 1 })),
 
   resetSession: () =>
     set({ phase: 'idle', currentCardIndex: 0, stats: { correct: 0, incorrect: 0 }, lastEvaluation: null }),

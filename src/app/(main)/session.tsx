@@ -7,7 +7,6 @@ import { useCardCacheStore } from '../../stores/useCardCacheStore';
 import { useSettingsStore } from '../../stores/useSettingsStore';
 import { sessionManager } from '../../services/sessionManager';
 import { webrtcManager } from '../../services/webrtcManager';
-import { CardDisplay } from '../../components/CardDisplay';
 
 // ---------------------------------------------------------------------------
 // Pulsing mic indicator component
@@ -204,6 +203,67 @@ function ProgressHeader({
         </View>
       </View>
     </View>
+  );
+}
+
+// ---------------------------------------------------------------------------
+// Evaluation banner — slides in from top showing correct/incorrect
+// ---------------------------------------------------------------------------
+function EvaluationBanner() {
+  const lastEvaluation = useSessionStore((s) => s.lastEvaluation);
+  const [visible, setVisible] = useState(false);
+  const [displayEval, setDisplayEval] = useState<'correct' | 'incorrect' | null>(null);
+  const slideAnim = useRef(new Animated.Value(-60)).current;
+
+  useEffect(() => {
+    if (lastEvaluation) {
+      setDisplayEval(lastEvaluation);
+      setVisible(true);
+      Animated.spring(slideAnim, {
+        toValue: 0,
+        friction: 8,
+        tension: 100,
+        useNativeDriver: true,
+      }).start();
+
+      const timer = setTimeout(() => {
+        Animated.timing(slideAnim, {
+          toValue: -60,
+          duration: 250,
+          useNativeDriver: true,
+        }).start(() => {
+          setVisible(false);
+          useSessionStore.setState({ lastEvaluation: null });
+        });
+      }, 3500);
+
+      return () => clearTimeout(timer);
+    }
+  }, [lastEvaluation]);
+
+  if (!visible || !displayEval) return null;
+
+  const isCorrect = displayEval === 'correct';
+
+  return (
+    <Animated.View
+      style={{
+        transform: [{ translateY: slideAnim }],
+        backgroundColor: isCorrect ? '#16a34a' : '#dc2626',
+        paddingVertical: 10,
+        paddingHorizontal: 20,
+        flexDirection: 'row',
+        alignItems: 'center',
+        justifyContent: 'center',
+      }}
+    >
+      <Text style={{ color: '#fff', fontSize: 16, fontWeight: '800', marginRight: 8 }}>
+        {isCorrect ? '\u2713' : '\u2717'}
+      </Text>
+      <Text style={{ color: '#fff', fontSize: 16, fontWeight: '700' }}>
+        {isCorrect ? 'Correct!' : 'Incorrect'}
+      </Text>
+    </Animated.View>
   );
 }
 
@@ -497,6 +557,9 @@ export default function SessionScreen() {
         stats={stats}
       />
 
+      {/* Evaluation banner (correct/incorrect) */}
+      <EvaluationBanner />
+
       {/* Main content */}
       <View className="flex-1 px-5 pt-4">
         {/* Question card */}
@@ -546,9 +609,6 @@ export default function SessionScreen() {
         <View className="mb-4">
           <AudioLevelMeter />
         </View>
-
-        {/* Evaluation feedback */}
-        <CardDisplay />
       </View>
 
       {/* Bottom controls */}
