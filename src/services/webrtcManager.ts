@@ -66,9 +66,13 @@ class WebRTCManager {
         throw new Error('No API key found. Please add your OpenAI API key in settings.');
       }
 
-      // 2. Get microphone access
+      // 2. Get microphone access (disable processing for emulator compatibility)
       const localStream = await mediaDevices.getUserMedia({
-        audio: true,
+        audio: {
+          echoCancellation: false,
+          noiseSuppression: false,
+          autoGainControl: false,
+        },
         video: false,
       });
       this.state.localStream = localStream as MediaStream;
@@ -80,7 +84,10 @@ class WebRTCManager {
       this.state.peerConnection = peerConnection;
 
       // 4. Add local audio track
-      (localStream as MediaStream).getTracks().forEach((track: MediaStreamTrack) => {
+      const tracks = (localStream as MediaStream).getTracks();
+      console.log(`[WebRTC] Local audio tracks: ${tracks.length}`);
+      tracks.forEach((track: MediaStreamTrack) => {
+        console.log(`[WebRTC] Adding track: kind=${track.kind}, enabled=${track.enabled}, readyState=${track.readyState}, id=${track.id}`);
         peerConnection.addTrack(track, localStream as MediaStream);
       });
 
@@ -155,6 +162,14 @@ class WebRTCManager {
 
       setConnectionState('connected');
       console.log('[WebRTC] Connected to OpenAI Realtime API');
+
+      // Log audio track state after connection
+      if (this.state.localStream) {
+        this.state.localStream.getTracks().forEach((track: MediaStreamTrack) => {
+          console.log(`[WebRTC] Post-connect track: kind=${track.kind}, enabled=${track.enabled}, readyState=${track.readyState}, muted=${(track as any).muted}`);
+        });
+      }
+
       return true;
 
     } catch (error) {
@@ -462,6 +477,17 @@ class WebRTCManager {
    * Handle server events
    */
   private handleServerEvent(event: any): void {
+    // Log key events for debugging (skip noisy audio deltas)
+    const silentEvents = ['response.audio.delta', 'response.audio_transcript.delta'];
+    if (!silentEvents.includes(event.type)) {
+      console.log(`[WebRTC] Event: ${event.type}`);
+    }
+
+    // Log errors in full
+    if (event.type === 'error') {
+      console.error('[WebRTC] Server error:', JSON.stringify(event.error || event));
+    }
+
     const handlers = this.eventHandlers.get(event.type) || [];
     handlers.forEach((handler) => handler(event));
 
@@ -543,6 +569,26 @@ class WebRTCManager {
   }
 
   /**
+   * Get audio RTP stats for level monitoring.
+   * Returns bytesSent and packetsSent from the outbound-rtp report.
+   */
+  async getAudioStats(): Promise<{ bytesSent: number; packetsSent: number } | null> {
+    if (!this.state.peerConnection) return null;
+    try {
+      const stats = await this.state.peerConnection.getStats();
+      let result: { bytesSent: number; packetsSent: number } | null = null;
+      stats.forEach((report: any) => {
+        if (report.type === 'outbound-rtp' && report.kind === 'audio') {
+          result = { bytesSent: report.bytesSent ?? 0, packetsSent: report.packetsSent ?? 0 };
+        }
+      });
+      return result;
+    } catch {
+      return null;
+    }
+  }
+
+  /**
    * Get current connection state
    */
   isConnected(): boolean {
@@ -550,13 +596,51 @@ class WebRTCManager {
   }
 
   /**
+   * Log current audio track state and RTP stats for debugging
+   */
+  async debugAudioTrackState(label: string): Promise<void> {
+    if (this.state.localStream) {
+      this.state.localStream.getTracks().forEach((track: MediaStreamTrack) => {
+        console.log(`[WebRTC] ${label} - Track: kind=${track.kind}, enabled=${track.enabled}, readyState=${track.readyState}`);
+      });
+    } else {
+      console.log(`[WebRTC] ${label} - No localStream`);
+    }
+    if (this.state.peerConnection) {
+      console.log(`[WebRTC] ${label} - PC: iceState=${this.state.peerConnection.iceConnectionState}, sigState=${this.state.peerConnection.signalingState}`);
+      // Check RTP stats to see if audio is actually being sent
+      try {
+        const stats = await this.state.peerConnection.getStats();
+        stats.forEach((report: any) => {
+          if (report.type === 'outbound-rtp' && report.kind === 'audio') {
+            console.log(`[WebRTC] ${label} - Audio RTP: bytesSent=${report.bytesSent}, packetsSent=${report.packetsSent}, codec=${report.codecId}`);
+          }
+          if (report.type === 'remote-inbound-rtp' && report.kind === 'audio') {
+            console.log(`[WebRTC] ${label} - Remote inbound: packetsReceived=${report.packetsReceived}, packetsLost=${report.packetsLost}`);
+          }
+        });
+      } catch (e) {
+        console.log(`[WebRTC] ${label} - getStats failed: ${e}`);
+      }
+    }
+    if (this.state.dataChannel) {
+      console.log(`[WebRTC] ${label} - DC: readyState=${this.state.dataChannel.readyState}`);
+    }
+  }
+
+  /**
    * Mute/unmute microphone
    */
   setMicrophoneMuted(muted: boolean): void {
     if (this.state.localStream) {
-      this.state.localStream.getTracks().forEach((track: MediaStreamTrack) => {
+      const tracks = this.state.localStream.getTracks();
+      console.log(`[WebRTC] setMicrophoneMuted(${muted}) — ${tracks.length} tracks`);
+      tracks.forEach((track: MediaStreamTrack) => {
         track.enabled = !muted;
+        console.log(`[WebRTC] Track ${track.id}: enabled=${track.enabled}, readyState=${track.readyState}`);
       });
+    } else {
+      console.warn('[WebRTC] setMicrophoneMuted: no localStream');
     }
   }
 

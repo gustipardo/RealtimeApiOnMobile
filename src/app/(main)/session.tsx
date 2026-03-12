@@ -6,6 +6,7 @@ import { useSessionStore } from '../../stores/useSessionStore';
 import { useCardCacheStore } from '../../stores/useCardCacheStore';
 import { useSettingsStore } from '../../stores/useSettingsStore';
 import { sessionManager } from '../../services/sessionManager';
+import { webrtcManager } from '../../services/webrtcManager';
 import { CardDisplay } from '../../components/CardDisplay';
 
 // ---------------------------------------------------------------------------
@@ -105,6 +106,62 @@ function ConnectionBadge() {
     <View className="flex-row items-center rounded-full bg-gray-100 px-3 py-1.5">
       <View className={`mr-2 h-2.5 w-2.5 rounded-full ${dotColor}`} />
       <Text className="text-xs font-medium text-gray-600">{label}</Text>
+    </View>
+  );
+}
+
+// ---------------------------------------------------------------------------
+// Audio level meter (debug) — shows if mic audio is reaching WebRTC
+// ---------------------------------------------------------------------------
+function AudioLevelMeter() {
+  const [level, setLevel] = useState(0);
+  const [bytesPerPacket, setBytesPerPacket] = useState(0);
+  const prevStats = useRef<{ bytesSent: number; packetsSent: number } | null>(null);
+
+  useEffect(() => {
+    const interval = setInterval(async () => {
+      const stats = await webrtcManager.getAudioStats();
+      if (stats && prevStats.current) {
+        const dBytes = stats.bytesSent - prevStats.current.bytesSent;
+        const dPackets = stats.packetsSent - prevStats.current.packetsSent;
+        const bpp = dPackets > 0 ? dBytes / dPackets : 0;
+        setBytesPerPacket(Math.round(bpp));
+        // Normalize: silence ~40 bytes/pkt, voice ~80-160 bytes/pkt
+        const normalized = Math.min(1, Math.max(0, (bpp - 40) / 100));
+        setLevel(normalized);
+      }
+      prevStats.current = stats;
+    }, 500);
+    return () => clearInterval(interval);
+  }, []);
+
+  const barCount = 8;
+  const activeColor = level > 0.1 ? '#22c55e' : '#ef4444';
+  const label = bytesPerPacket > 60 ? 'Audio OK' : 'Silence';
+
+  return (
+    <View className="flex-row items-center rounded-lg bg-gray-800 px-3 py-2">
+      <View className="flex-row items-end mr-2" style={{ height: 20 }}>
+        {Array.from({ length: barCount }).map((_, i) => {
+          const threshold = i / barCount;
+          const isActive = level > threshold;
+          return (
+            <View
+              key={i}
+              style={{
+                width: 4,
+                height: 6 + (i * 2),
+                marginHorizontal: 1,
+                borderRadius: 1,
+                backgroundColor: isActive ? activeColor : '#4b5563',
+              }}
+            />
+          );
+        })}
+      </View>
+      <Text className="text-xs font-mono" style={{ color: activeColor }}>
+        {label} ({bytesPerPacket}b/pkt)
+      </Text>
     </View>
   );
 }
@@ -483,6 +540,11 @@ export default function SessionScreen() {
               {phaseVisual.hint}
             </Text>
           </View>
+        </View>
+
+        {/* Audio debug meter */}
+        <View className="mb-4">
+          <AudioLevelMeter />
         </View>
 
         {/* Evaluation feedback */}

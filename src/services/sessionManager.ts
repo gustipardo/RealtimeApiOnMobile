@@ -42,9 +42,8 @@ class SessionManager {
         await webrtcManager.connect();
       }
 
-      // 2. Mute microphone while we configure the session.
-      //    This prevents the server-side VAD from triggering an AI
-      //    response before our system prompt and card data are in place.
+      // 2. Mute microphone during setup to prevent default server_vad
+      //    from picking up audio before our session config is applied.
       webrtcManager.setMicrophoneMuted(true);
 
       // 3. Load cards from AnkiDroid
@@ -78,8 +77,7 @@ class SessionManager {
         transitionTo('awaiting_answer', 'first_card_sent');
       }
 
-      // 7. Unmute microphone now that the session is fully configured
-      //    and server_vad has been enabled after the first AI response.
+      // 7. Unmute microphone now that server_vad is enabled
       webrtcManager.setMicrophoneMuted(false);
 
       // 8. Start foreground service for background audio
@@ -135,10 +133,24 @@ class SessionManager {
 
     console.log('[SessionManager] First AI response complete, enabling server_vad');
 
+    // Clear any buffered audio from the manual-mode phase before enabling VAD
+    webrtcManager.sendEvent({ type: 'input_audio_buffer.clear' });
+
     // NOW enable server_vad for ongoing voice interaction
+    // Lower threshold (default 0.5) to be more sensitive to quiet audio
     await webrtcManager.updateSession({
-      turn_detection: { type: 'server_vad' },
+      turn_detection: {
+        type: 'server_vad',
+        threshold: 0.3,
+        prefix_padding_ms: 300,
+        silence_duration_ms: 500,
+      },
     });
+
+    console.log('[SessionManager] server_vad enabled successfully');
+    await webrtcManager.debugAudioTrackState('after-vad-enabled');
+    // Check again after 5s to see if bytes are increasing (audio actually flowing)
+    setTimeout(() => webrtcManager.debugAudioTrackState('5s-after-vad'), 5000);
   }
 
   /**
@@ -330,10 +342,7 @@ class SessionManager {
 
     console.log('[SessionManager] Resuming session after reconnect');
 
-    // 1. Mute mic while reconfiguring
-    webrtcManager.setMicrophoneMuted(true);
-
-    // 2. Re-configure AI session (system prompt + tools)
+    // 1. Re-configure AI session (system prompt + tools)
     const totalCards = getTotalCardCount();
     await this.configureAISession(selectedDeck, totalCards);
 
@@ -363,14 +372,14 @@ class SessionManager {
 
       console.log('[SessionManager] AI resume response complete, enabling server_vad');
 
-      // Enable server_vad for voice interaction
+      // Clear buffered audio and enable server_vad
+      webrtcManager.sendEvent({ type: 'input_audio_buffer.clear' });
       await webrtcManager.updateSession({
         turn_detection: { type: 'server_vad' },
       });
     }
 
-    // 5. Unmute and transition back to active phase
-    webrtcManager.setMicrophoneMuted(false);
+    // 5. Transition back to active phase
     const restorePhase = this.phaseBeforeNetworkPause || 'awaiting_answer';
     transitionTo(restorePhase as any, 'reconnect_resumed');
     this.phaseBeforeNetworkPause = null;
