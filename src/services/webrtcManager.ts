@@ -5,10 +5,13 @@ import {
   MediaStream,
   MediaStreamTrack,
 } from 'react-native-webrtc';
-import { getApiKey } from '../utils/secureStorage';
+import { getToken, isTokenError } from './tokenService';
+import { isDev } from '../config/env';
 import { useConnectionStore } from '../stores/useConnectionStore';
 
-const OPENAI_REALTIME_URL = 'https://api.openai.com/v1/realtime';
+// GA endpoints (used in prod); Beta endpoints (used in dev for backward compat)
+const OPENAI_REALTIME_CALLS_URL = 'https://api.openai.com/v1/realtime/calls';
+const OPENAI_REALTIME_BETA_URL = 'https://api.openai.com/v1/realtime';
 const REALTIME_MODEL = 'gpt-4o-realtime-preview-2024-12-17';
 
 const MAX_RECONNECT_ATTEMPTS = 3;
@@ -60,11 +63,8 @@ class WebRTCManager {
       setConnectionState('connecting');
       this.isInitialConnect = true;
 
-      // 1. Get API key from secure storage
-      const apiKey = await getApiKey();
-      if (!apiKey) {
-        throw new Error('No API key found. Please add your OpenAI API key in settings.');
-      }
+      // 1. Get token (API key in dev, ephemeral token in prod)
+      const { token } = await getToken();
 
       // 2. Get microphone access (disable processing for emulator compatibility)
       const localStream = await mediaDevices.getUserMedia({
@@ -128,22 +128,41 @@ class WebRTCManager {
       await peerConnection.setLocalDescription(offer);
 
       // 8. Send offer to OpenAI and get answer
-      const response = await fetch(`${OPENAI_REALTIME_URL}?model=${REALTIME_MODEL}`, {
-        method: 'POST',
-        headers: {
-          'Authorization': `Bearer ${apiKey}`,
-          'Content-Type': 'application/sdp',
-        },
-        body: offer.sdp,
-      });
+      //    Dev mode: Beta endpoint (direct API key)
+      //    Prod mode: GA endpoint (ephemeral token)
+      let answerSdp: string;
 
-      if (!response.ok) {
-        const errorText = await response.text();
-        throw new Error(`OpenAI API error: ${response.status} - ${errorText}`);
+      if (isDev()) {
+        // Beta endpoint — backwards compatible with direct API key
+        const response = await fetch(`${OPENAI_REALTIME_BETA_URL}?model=${REALTIME_MODEL}`, {
+          method: 'POST',
+          headers: {
+            'Authorization': `Bearer ${token}`,
+            'Content-Type': 'application/sdp',
+          },
+          body: offer.sdp,
+        });
+        if (!response.ok) {
+          const errorText = await response.text();
+          throw new Error(`OpenAI API error: ${response.status} - ${errorText}`);
+        }
+        answerSdp = await response.text();
+      } else {
+        // GA endpoint — ephemeral token from cloud function
+        const response = await fetch(OPENAI_REALTIME_CALLS_URL, {
+          method: 'POST',
+          headers: {
+            'Authorization': `Bearer ${token}`,
+            'Content-Type': 'application/sdp',
+          },
+          body: offer.sdp,
+        });
+        if (!response.ok) {
+          const errorText = await response.text();
+          throw new Error(`OpenAI API error: ${response.status} - ${errorText}`);
+        }
+        answerSdp = await response.text();
       }
-
-      // 9. Set remote description (SDP answer)
-      const answerSdp = await response.text();
       const answer = new RTCSessionDescription({
         type: 'answer',
         sdp: answerSdp,

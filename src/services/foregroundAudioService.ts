@@ -1,6 +1,6 @@
 import ExpoForegroundAudioModule from 'expo-foreground-audio';
 import { useSessionStore } from '../stores/useSessionStore';
-import { webrtcManager } from './webrtcManager';
+import { realtimeManager as webrtcManager } from './realtimeManager';
 
 /**
  * Foreground Audio Service - JS wrapper for the native module.

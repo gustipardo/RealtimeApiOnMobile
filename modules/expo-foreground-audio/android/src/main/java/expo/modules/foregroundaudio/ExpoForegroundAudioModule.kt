@@ -10,10 +10,15 @@ class ExpoForegroundAudioModule : Module() {
   private val context: Context
     get() = appContext.reactContext ?: throw IllegalStateException("React context not available")
 
+  private val audioRecordManager = AudioRecordManager()
+  private val audioTrackManager = AudioTrackManager()
+
   override fun definition() = ModuleDefinition {
     Name("ExpoForegroundAudio")
 
-    Events("onAudioFocusChange", "onNotificationAction")
+    Events("onAudioFocusChange", "onNotificationAction", "onAudioData")
+
+    // --- Foreground service functions ---
 
     AsyncFunction("startService") { title: String, body: String ->
       ForegroundAudioService.moduleRef = this@ExpoForegroundAudioModule
@@ -73,6 +78,32 @@ class ExpoForegroundAudioModule : Module() {
         context.startService(intent)
       }
       Unit
+    }
+
+    // --- PCM mic capture ---
+
+    AsyncFunction("startMicCapture") { sampleRate: Int ->
+      audioRecordManager.start(sampleRate) { base64Data ->
+        sendEvent("onAudioData", mapOf("data" to base64Data))
+      }
+    }
+
+    AsyncFunction("stopMicCapture") {
+      audioRecordManager.stop()
+    }
+
+    // --- PCM audio playback ---
+
+    AsyncFunction("initAudioPlayer") { sampleRate: Int ->
+      audioTrackManager.init(sampleRate)
+    }
+
+    AsyncFunction("playAudioChunk") { base64Data: String ->
+      audioTrackManager.writeChunk(base64Data)
+    }
+
+    AsyncFunction("stopAudioPlayer") {
+      audioTrackManager.stop()
     }
   }
 

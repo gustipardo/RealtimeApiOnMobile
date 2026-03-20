@@ -8,11 +8,67 @@ import {
   RefreshControl,
   Switch,
   Platform,
+  StatusBar,
 } from 'react-native';
 import { useRouter } from 'expo-router';
 import { useSettingsStore } from '../../stores/useSettingsStore';
 import { ankiBridge } from '../../native/ankiBridge';
+import { requiresPayment, requiresAuth } from '../../config/env';
+import { checkTrialStatus, type TrialStatus } from '../../services/trialService';
+import { signOut } from '../../services/authService';
+import { AnalyticsEvents } from '../../services/analytics';
 import type { DeckInfo } from '../../types/anki';
+
+// ---------------------------------------------------------------------------
+// Theme
+// ---------------------------------------------------------------------------
+interface Theme {
+  bg: string;
+  surface: string;
+  text: string;
+  textSecondary: string;
+  textDimmed: string;
+  border: string;
+  accent: string;
+  pressHighlight: string;
+  switchTrackOff: string;
+  switchTrackOn: string;
+  switchThumbOff: string;
+  switchThumbOn: string;
+  statusBar: 'light-content' | 'dark-content';
+}
+
+const darkTheme: Theme = {
+  bg: '#121212',
+  surface: '#1e1e1e',
+  text: '#ffffff',
+  textSecondary: '#9ca3af',
+  textDimmed: '#4b5563',
+  border: '#2a2a2a',
+  accent: '#3b82f6',
+  pressHighlight: '#2a2a2a',
+  switchTrackOff: '#4b5563',
+  switchTrackOn: '#2563eb',
+  switchThumbOff: '#9ca3af',
+  switchThumbOn: '#93c5fd',
+  statusBar: 'light-content',
+};
+
+const lightTheme: Theme = {
+  bg: '#f9fafb',
+  surface: '#ffffff',
+  text: '#111827',
+  textSecondary: '#6b7280',
+  textDimmed: '#d1d5db',
+  border: '#e5e7eb',
+  accent: '#3b82f6',
+  pressHighlight: '#f3f4f6',
+  switchTrackOff: '#d1d5db',
+  switchTrackOn: '#93c5fd',
+  switchThumbOff: '#f4f4f5',
+  switchThumbOn: '#3b82f6',
+  statusBar: 'dark-content',
+};
 
 type LoadingState = 'loading' | 'loaded' | 'error' | 'empty';
 
@@ -21,10 +77,18 @@ export default function DeckSelectScreen() {
   const setSelectedDeck = useSettingsStore((s) => s.setSelectedDeck);
   const alwaysReadBack = useSettingsStore((s) => s.alwaysReadBack);
   const setAlwaysReadBack = useSettingsStore((s) => s.setAlwaysReadBack);
+  const darkMode = useSettingsStore((s) => s.darkMode);
+  const toggleDarkMode = useSettingsStore((s) => s.toggleDarkMode);
+  const aiProvider = useSettingsStore((s) => s.aiProvider);
+  const setAIProvider = useSettingsStore((s) => s.setAIProvider);
 
   const [decks, setDecks] = useState<DeckInfo[]>([]);
   const [loadingState, setLoadingState] = useState<LoadingState>('loading');
   const [refreshing, setRefreshing] = useState(false);
+  const [syncing, setSyncing] = useState(false);
+  const [trialStatus, setTrialStatus] = useState<TrialStatus | null>(null);
+
+  const t = darkMode ? darkTheme : lightTheme;
 
   const loadDecks = useCallback(async () => {
     try {
@@ -46,6 +110,11 @@ export default function DeckSelectScreen() {
 
   useEffect(() => {
     loadDecks();
+    if (requiresPayment()) {
+      checkTrialStatus()
+        .then(setTrialStatus)
+        .catch((err) => console.warn('Trial check failed:', err));
+    }
   }, [loadDecks]);
 
   async function handleRefresh() {
@@ -54,7 +123,41 @@ export default function DeckSelectScreen() {
     setRefreshing(false);
   }
 
+  async function handleSignOut() {
+    try {
+      await signOut();
+      useSettingsStore.getState().setOnboardingCompleted(false);
+      router.replace('/(onboarding)');
+    } catch (err) {
+      console.error('Sign-out failed:', err);
+    }
+  }
+
+  async function handleSync() {
+    if (syncing) return;
+    setSyncing(true);
+    try {
+      await ankiBridge.triggerSync();
+      // Give AnkiDroid a moment to start syncing, then refresh deck list
+      setTimeout(async () => {
+        await loadDecks();
+        setSyncing(false);
+      }, 2000);
+    } catch (error) {
+      console.error('Sync failed:', error);
+      setSyncing(false);
+    }
+  }
+
   function handleSelectDeck(deckName: string) {
+    // Block session start if trial expired and no subscription
+    if (trialStatus && !trialStatus.isActive && !trialStatus.subscriptionActive) {
+      AnalyticsEvents.paywallShown('trial_expired');
+      router.push('/(main)/paywall');
+      return;
+    }
+
+    AnalyticsEvents.deckSelected(deckName);
     setSelectedDeck(deckName);
     router.push('/(main)/session');
   }
@@ -64,12 +167,15 @@ export default function DeckSelectScreen() {
   // -----------------------------------------------------------------------
   if (loadingState === 'loading') {
     return (
-      <View className="flex-1 items-center justify-center bg-gray-50">
-        <View className="mb-4 h-16 w-16 items-center justify-center rounded-full bg-blue-100">
-          <ActivityIndicator size="large" color="#3b82f6" />
-        </View>
-        <Text className="text-base font-semibold text-gray-700">Loading decks...</Text>
-        <Text className="mt-1 text-sm text-gray-400">Connecting to AnkiDroid</Text>
+      <View style={{ flex: 1, alignItems: 'center', justifyContent: 'center', backgroundColor: t.bg }}>
+        <StatusBar barStyle={t.statusBar} backgroundColor={t.bg} />
+        <ActivityIndicator size="large" color={t.accent} />
+        <Text style={{ color: t.text, fontWeight: '600', fontSize: 16, marginTop: 16 }}>
+          Loading decks...
+        </Text>
+        <Text style={{ color: t.textSecondary, fontSize: 13, marginTop: 4 }}>
+          Connecting to AnkiDroid
+        </Text>
       </View>
     );
   }
@@ -79,21 +185,22 @@ export default function DeckSelectScreen() {
   // -----------------------------------------------------------------------
   if (loadingState === 'error') {
     return (
-      <View className="flex-1 items-center justify-center bg-gray-50 px-8">
-        <View className="mb-5 h-20 w-20 items-center justify-center rounded-full bg-red-100">
-          <Text className="text-3xl font-bold text-red-500">!</Text>
+      <View style={{ flex: 1, alignItems: 'center', justifyContent: 'center', backgroundColor: t.bg, paddingHorizontal: 32 }}>
+        <StatusBar barStyle={t.statusBar} backgroundColor={t.bg} />
+        <View style={{ width: 80, height: 80, borderRadius: 40, backgroundColor: darkMode ? '#451a1a' : '#fecaca', alignItems: 'center', justifyContent: 'center', marginBottom: 20 }}>
+          <Text style={{ fontSize: 28, fontWeight: '800', color: '#ef4444' }}>!</Text>
         </View>
-        <Text className="mb-2 text-center text-xl font-bold text-gray-900">
+        <Text style={{ fontSize: 20, fontWeight: '700', color: t.text, textAlign: 'center', marginBottom: 8 }}>
           Cannot Load Decks
         </Text>
-        <Text className="mb-8 text-center text-base leading-relaxed text-gray-500">
+        <Text style={{ fontSize: 14, color: t.textSecondary, textAlign: 'center', lineHeight: 22, marginBottom: 32 }}>
           Could not connect to AnkiDroid. Make sure AnkiDroid is installed, running, and permissions are granted.
         </Text>
         <Pressable
           onPress={loadDecks}
-          className="rounded-2xl bg-blue-500 px-10 py-3.5 active:bg-blue-600"
+          style={{ backgroundColor: t.accent, borderRadius: 16, paddingVertical: 14, paddingHorizontal: 40 }}
         >
-          <Text className="text-base font-bold text-white">Try Again</Text>
+          <Text style={{ color: '#fff', fontSize: 15, fontWeight: '700' }}>Try Again</Text>
         </Pressable>
       </View>
     );
@@ -104,21 +211,22 @@ export default function DeckSelectScreen() {
   // -----------------------------------------------------------------------
   if (loadingState === 'empty') {
     return (
-      <View className="flex-1 items-center justify-center bg-gray-50 px-8">
-        <View className="mb-5 h-20 w-20 items-center justify-center rounded-full bg-amber-100">
-          <Text className="text-3xl font-bold text-amber-600">0</Text>
+      <View style={{ flex: 1, alignItems: 'center', justifyContent: 'center', backgroundColor: t.bg, paddingHorizontal: 32 }}>
+        <StatusBar barStyle={t.statusBar} backgroundColor={t.bg} />
+        <View style={{ width: 80, height: 80, borderRadius: 40, backgroundColor: darkMode ? '#422006' : '#fef3c7', alignItems: 'center', justifyContent: 'center', marginBottom: 20 }}>
+          <Text style={{ fontSize: 28, fontWeight: '800', color: '#d97706' }}>0</Text>
         </View>
-        <Text className="mb-2 text-center text-xl font-bold text-gray-900">
+        <Text style={{ fontSize: 20, fontWeight: '700', color: t.text, textAlign: 'center', marginBottom: 8 }}>
           No Decks Found
         </Text>
-        <Text className="mb-8 text-center text-base leading-relaxed text-gray-500">
+        <Text style={{ fontSize: 14, color: t.textSecondary, textAlign: 'center', lineHeight: 22, marginBottom: 32 }}>
           AnkiDroid does not have any decks yet. Create or import some decks in AnkiDroid, then come back.
         </Text>
         <Pressable
           onPress={handleRefresh}
-          className="rounded-2xl bg-blue-500 px-10 py-3.5 active:bg-blue-600"
+          style={{ backgroundColor: t.accent, borderRadius: 16, paddingVertical: 14, paddingHorizontal: 40 }}
         >
-          <Text className="text-base font-bold text-white">Refresh</Text>
+          <Text style={{ color: '#fff', fontSize: 15, fontWeight: '700' }}>Refresh</Text>
         </Pressable>
       </View>
     );
@@ -130,47 +238,197 @@ export default function DeckSelectScreen() {
   const totalDue = decks.reduce((sum, d) => sum + d.dueCount, 0);
 
   return (
-    <View className="flex-1 bg-gray-50">
+    <View style={{ flex: 1, backgroundColor: t.bg }}>
+      <StatusBar barStyle={t.statusBar} backgroundColor={t.surface} />
+
       {/* Header */}
-      <View className="bg-white px-6 pb-5 pt-16" style={Platform.OS === 'android' ? { elevation: 2 } : {}}>
-        <Text className="text-2xl font-bold text-gray-900">Choose a Deck</Text>
-        <Text className="mt-1 text-sm text-gray-500">
-          {decks.length} deck{decks.length !== 1 ? 's' : ''}
-          {totalDue > 0 ? ` \u00B7 ${totalDue} card${totalDue !== 1 ? 's' : ''} due` : ''}
-        </Text>
+      <View
+        style={{
+          backgroundColor: t.surface,
+          paddingHorizontal: 20,
+          paddingBottom: 12,
+          paddingTop: Platform.OS === 'android' ? (StatusBar.currentHeight ?? 0) + 12 : 56,
+          borderBottomWidth: 1,
+          borderBottomColor: t.border,
+        }}
+      >
+        <View style={{ flexDirection: 'row', alignItems: 'center', justifyContent: 'space-between' }}>
+          <View>
+            <Text style={{ fontSize: 22, fontWeight: '700', color: t.text }}>Anki Voice</Text>
+            <Text style={{ fontSize: 13, color: t.textSecondary, marginTop: 2 }}>
+              {totalDue > 0 ? `${totalDue} cards due` : `${decks.length} decks`}
+            </Text>
+          </View>
+          <View style={{ flexDirection: 'row', alignItems: 'center', gap: 8 }}>
+            <Pressable
+              onPress={handleSync}
+              disabled={syncing}
+              style={{
+                paddingHorizontal: 12,
+                paddingVertical: 6,
+                borderRadius: 8,
+                backgroundColor: t.pressHighlight,
+                opacity: syncing ? 0.5 : 1,
+              }}
+            >
+              {syncing ? (
+                <ActivityIndicator size="small" color={t.textSecondary} />
+              ) : (
+                <Text style={{ color: t.textSecondary, fontSize: 18 }}>⟳</Text>
+              )}
+            </Pressable>
+            <Pressable
+              onPress={toggleDarkMode}
+              style={{
+                paddingHorizontal: 12,
+                paddingVertical: 6,
+                borderRadius: 8,
+                backgroundColor: t.pressHighlight,
+              }}
+            >
+              <Text style={{ color: t.textSecondary, fontSize: 13, fontWeight: '600' }}>
+                {darkMode ? 'Light' : 'Dark'}
+              </Text>
+            </Pressable>
+            {requiresAuth() && (
+              <Pressable
+                onPress={handleSignOut}
+                style={{
+                  paddingHorizontal: 12,
+                  paddingVertical: 6,
+                  borderRadius: 8,
+                  backgroundColor: t.pressHighlight,
+                }}
+              >
+                <Text style={{ color: t.textSecondary, fontSize: 13, fontWeight: '600' }}>
+                  Sign Out
+                </Text>
+              </Pressable>
+            )}
+          </View>
+        </View>
       </View>
 
-      {/* Study options */}
-      <View className="mx-4 mt-3 flex-row items-center justify-between rounded-xl border border-gray-200 bg-white px-4 py-3">
-        <View className="flex-1 mr-3">
-          <Text className="text-sm font-semibold text-gray-800">Always read answer</Text>
-          <Text className="text-xs text-gray-400">Read the back of the card after every answer</Text>
+      {/* Trial status banner */}
+      {trialStatus && trialStatus.isActive && !trialStatus.subscriptionActive && (
+        <View
+          style={{
+            marginHorizontal: 16,
+            marginTop: 12,
+            backgroundColor: darkMode ? '#1e3a5f' : '#dbeafe',
+            borderRadius: 12,
+            paddingHorizontal: 16,
+            paddingVertical: 10,
+          }}
+        >
+          <Text style={{ fontSize: 13, fontWeight: '600', color: darkMode ? '#93c5fd' : '#1e40af' }}>
+            Free trial: {trialStatus.daysRemaining} days / {trialStatus.sessionsRemaining} sessions remaining
+          </Text>
+        </View>
+      )}
+
+      {/* Settings row */}
+      <View
+        style={{
+          marginHorizontal: 16,
+          marginTop: 12,
+          flexDirection: 'row',
+          alignItems: 'center',
+          justifyContent: 'space-between',
+          backgroundColor: t.surface,
+          borderRadius: 12,
+          borderWidth: 1,
+          borderColor: t.border,
+          paddingHorizontal: 16,
+          paddingVertical: 12,
+        }}
+      >
+        <View style={{ flex: 1, marginRight: 12 }}>
+          <Text style={{ fontSize: 14, fontWeight: '600', color: t.text }}>Always read answer</Text>
+          <Text style={{ fontSize: 11, color: t.textSecondary }}>
+            Read the back of the card after every answer
+          </Text>
         </View>
         <Switch
           value={alwaysReadBack}
           onValueChange={setAlwaysReadBack}
-          trackColor={{ false: '#d1d5db', true: '#93c5fd' }}
-          thumbColor={alwaysReadBack ? '#3b82f6' : '#f4f4f5'}
+          trackColor={{ false: t.switchTrackOff, true: t.switchTrackOn }}
+          thumbColor={alwaysReadBack ? t.switchThumbOn : t.switchThumbOff}
         />
       </View>
 
+      {/* AI Provider selector */}
+      <View
+        style={{
+          marginHorizontal: 16,
+          marginTop: 8,
+          flexDirection: 'row',
+          alignItems: 'center',
+          backgroundColor: t.surface,
+          borderRadius: 12,
+          borderWidth: 1,
+          borderColor: t.border,
+          overflow: 'hidden',
+        }}
+      >
+        <Pressable
+          onPress={() => setAIProvider('openai')}
+          style={{
+            flex: 1,
+            paddingVertical: 10,
+            alignItems: 'center',
+            backgroundColor: aiProvider === 'openai' ? t.accent : 'transparent',
+          }}
+        >
+          <Text
+            style={{
+              fontSize: 13,
+              fontWeight: '700',
+              color: aiProvider === 'openai' ? '#fff' : t.textSecondary,
+            }}
+          >
+            OpenAI
+          </Text>
+        </Pressable>
+        <Pressable
+          onPress={() => setAIProvider('gemini')}
+          style={{
+            flex: 1,
+            paddingVertical: 10,
+            alignItems: 'center',
+            backgroundColor: aiProvider === 'gemini' ? t.accent : 'transparent',
+          }}
+        >
+          <Text
+            style={{
+              fontSize: 13,
+              fontWeight: '700',
+              color: aiProvider === 'gemini' ? '#fff' : t.textSecondary,
+            }}
+          >
+            Gemini
+          </Text>
+        </Pressable>
+      </View>
+
+      {/* Deck list */}
       <FlatList
         data={decks}
         keyExtractor={(item) => item.deckName}
-        contentContainerStyle={{ padding: 16, paddingBottom: 32 }}
+        style={{ marginTop: 8 }}
+        contentContainerStyle={{ paddingBottom: 32 }}
         refreshControl={
-          <RefreshControl refreshing={refreshing} onRefresh={handleRefresh} />
+          <RefreshControl refreshing={refreshing} onRefresh={handleRefresh} tintColor={t.textSecondary} />
         }
-        ItemSeparatorComponent={() => <View className="h-2.5" />}
+        ItemSeparatorComponent={() => (
+          <View style={{ height: 1, backgroundColor: t.border, marginHorizontal: 20 }} />
+        )}
         renderItem={({ item }) => (
-          <DeckCard
-            deck={item}
-            onPress={() => handleSelectDeck(item.deckName)}
-          />
+          <DeckRow deck={item} onPress={() => handleSelectDeck(item.deckName)} theme={t} />
         )}
         ListEmptyComponent={
-          <View className="items-center py-8">
-            <Text className="text-gray-500">No decks available</Text>
+          <View style={{ alignItems: 'center', paddingVertical: 32 }}>
+            <Text style={{ color: t.textSecondary }}>No decks available</Text>
           </View>
         }
       />
@@ -179,48 +437,70 @@ export default function DeckSelectScreen() {
 }
 
 // ---------------------------------------------------------------------------
-// DeckCard
+// Deck row — matches AnkiDroid style: name left, colored counts right
 // ---------------------------------------------------------------------------
-function DeckCard({
+function DeckRow({
   deck,
   onPress,
+  theme: t,
 }: {
   deck: DeckInfo;
   onPress: () => void;
+  theme: Theme;
 }) {
-  const hasDue = deck.dueCount > 0;
-
   return (
     <Pressable
       onPress={onPress}
-      className="rounded-2xl border border-gray-200 bg-white px-5 py-4 active:border-blue-400 active:bg-blue-50"
+      style={({ pressed }) => ({
+        paddingVertical: 14,
+        paddingHorizontal: 20,
+        flexDirection: 'row',
+        alignItems: 'center',
+        backgroundColor: pressed ? t.pressHighlight : 'transparent',
+      })}
     >
-      <View className="flex-row items-center">
-        {/* Left icon */}
-        <View
-          className={`mr-4 h-11 w-11 items-center justify-center rounded-xl ${
-            hasDue ? 'bg-blue-100' : 'bg-gray-100'
-          }`}
+      <Text
+        style={{ flex: 1, fontSize: 16, fontWeight: '700', color: t.text }}
+        numberOfLines={1}
+      >
+        {deck.deckName}
+      </Text>
+      <View style={{ flexDirection: 'row', marginLeft: 12 }}>
+        <Text
+          style={{
+            minWidth: 28,
+            textAlign: 'right',
+            fontSize: 13,
+            fontWeight: '600',
+            color: deck.newCount > 0 ? '#3b82f6' : t.textDimmed,
+          }}
         >
-          <Text className={`text-base font-bold ${hasDue ? 'text-blue-600' : 'text-gray-400'}`}>
-            {deck.dueCount > 0 ? deck.dueCount : '-'}
-          </Text>
-        </View>
-
-        {/* Deck info */}
-        <View className="flex-1">
-          <Text className="text-base font-semibold text-gray-900" numberOfLines={1}>
-            {deck.deckName}
-          </Text>
-          <Text className={`mt-0.5 text-xs ${hasDue ? 'font-medium text-blue-600' : 'text-gray-400'}`}>
-            {hasDue
-              ? `${deck.dueCount} card${deck.dueCount !== 1 ? 's' : ''} due for review`
-              : 'No cards due'}
-          </Text>
-        </View>
-
-        {/* Chevron */}
-        <Text className="ml-2 text-lg text-gray-300">{'\u203A'}</Text>
+          {deck.newCount}
+        </Text>
+        <Text
+          style={{
+            minWidth: 28,
+            textAlign: 'right',
+            fontSize: 13,
+            fontWeight: '600',
+            marginLeft: 6,
+            color: deck.learnCount > 0 ? '#ef4444' : t.textDimmed,
+          }}
+        >
+          {deck.learnCount}
+        </Text>
+        <Text
+          style={{
+            minWidth: 28,
+            textAlign: 'right',
+            fontSize: 13,
+            fontWeight: '600',
+            marginLeft: 6,
+            color: deck.reviewCount > 0 ? '#22c55e' : t.textDimmed,
+          }}
+        >
+          {deck.reviewCount}
+        </Text>
       </View>
     </Pressable>
   );

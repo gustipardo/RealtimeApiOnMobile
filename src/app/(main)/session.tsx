@@ -6,7 +6,8 @@ import { useSessionStore } from '../../stores/useSessionStore';
 import { useCardCacheStore } from '../../stores/useCardCacheStore';
 import { useSettingsStore } from '../../stores/useSettingsStore';
 import { sessionManager } from '../../services/sessionManager';
-import { webrtcManager } from '../../services/webrtcManager';
+import { realtimeManager as webrtcManager } from '../../services/realtimeManager';
+import { isTokenError } from '../../services/tokenService';
 
 // ---------------------------------------------------------------------------
 // Pulsing mic indicator component
@@ -296,9 +297,13 @@ export default function SessionScreen() {
       setError(null);
       await sessionManager.startSession();
     } catch (err: any) {
+      if (isTokenError(err) && err.error === 'trial_expired') {
+        router.replace('/(main)/paywall');
+        return;
+      }
       setError(err.message || 'Failed to start session');
     }
-  }, []);
+  }, [router]);
 
   const handleEndSession = useCallback(() => {
     sessionManager.endSession();

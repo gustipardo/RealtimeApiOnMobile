@@ -1,5 +1,5 @@
 import AnkiDroidModule from 'anki-droid';
-import type { AnkiCard, BridgeError } from '../types/anki';
+import type { AnkiCard, BridgeError, DeckInfo } from '../types/anki';
 
 /**
  * Typed wrapper for the AnkiDroid native module.
@@ -62,9 +62,16 @@ export const ankiBridge = {
     }
   },
 
-  async getDeckInfo(): Promise<{ deckName: string; dueCount: number }[]> {
+  async getDeckInfo(): Promise<DeckInfo[]> {
     try {
-      return await AnkiDroidModule.getDeckInfo();
+      const raw = await AnkiDroidModule.getDeckInfo();
+      return raw.map((d: any) => ({
+        deckName: d.deckName,
+        dueCount: d.dueCount ?? 0,
+        newCount: d.newCount ?? 0,
+        learnCount: d.learnCount ?? 0,
+        reviewCount: d.reviewCount ?? 0,
+      }));
     } catch (error) {
       console.error('[ankiBridge] getDeckInfo error:', error);
       throw createBridgeError('QUERY_FAILED', `Failed to get deck info: ${error}`);

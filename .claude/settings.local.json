@@ -24,7 +24,9 @@
       "Bash(npx jest:*)",
       "Bash(adb logcat:*)",
       "Bash(adb:*)",
-      "Bash(curl:*)"
+      "Bash(curl:*)",
+      "Bash(sudo adb:*)",
+      "WebFetch(domain:geolat.vercel.app)"
     ]
   }
 }

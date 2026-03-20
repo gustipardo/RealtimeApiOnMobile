@@ -1,4 +1,4 @@
-import { webrtcManager } from './webrtcManager';
+import { realtimeManager as webrtcManager, syncActiveProvider } from './realtimeManager';
 import { loadDueCards, getCurrentCard, getNextCard, getRemainingCardCount, getTotalCardCount, clearCards, peekNextCard, peekRemainingAfterAdvance, advanceCacheIndex } from './cardLoader';
 import { useSessionStore } from '../stores/useSessionStore';
 import { useSettingsStore } from '../stores/useSettingsStore';
@@ -6,6 +6,8 @@ import { useConnectionStore } from '../stores/useConnectionStore';
 import { ankiBridge } from '../native/ankiBridge';
 import { getSystemPrompt, allTools, getInitialMessage, getResumeMessage, formatToolResult } from '../config/prompts';
 import { startForegroundService, stopForegroundService, updateForegroundNotification, requestAudioFocus, clearAudioFocusPauseFlag } from './foregroundAudioService';
+import { isTokenError } from './tokenService';
+import { AnalyticsEvents } from './analytics';
 
 /**
  * Session Manager - Orchestrates the study session
@@ -37,6 +39,9 @@ class SessionManager {
     if (!selectedDeck) {
       throw new Error('No deck selected');
     }
+
+    // Pick the right AI backend before anything else
+    syncActiveProvider();
 
     // Reset session state
     resetSession();
@@ -87,6 +92,9 @@ class SessionManager {
       // 7. Unmute microphone now that server_vad is enabled
       webrtcManager.setMicrophoneMuted(false);
 
+      // Track session start
+      AnalyticsEvents.sessionStarted(selectedDeck, cards.length);
+
       // 8. Start foreground service for background audio
       try {
         await startForegroundService(
@@ -98,7 +106,8 @@ class SessionManager {
         // Non-fatal: session works without it, just no background audio
       }
 
-    } catch (error) {
+    } catch (error: any) {
+      AnalyticsEvents.sessionError(error?.message || 'start_failed');
       transitionTo('error', 'start_failed');
       throw error;
     }
@@ -329,6 +338,9 @@ class SessionManager {
     if (success) {
       try {
         await this.resumeAfterReconnect();
+        AnalyticsEvents.sessionReconnected(
+          useConnectionStore.getState().reconnectAttempts
+        );
       } catch (error) {
         console.error('[SessionManager] Failed to resume session after reconnect:', error);
         transitionTo('error', 'resume_failed');
@@ -547,6 +559,11 @@ class SessionManager {
   private async onSessionComplete(): Promise<void> {
     const stats = useSessionStore.getState().stats;
     console.log('[SessionManager] Session complete:', stats);
+    AnalyticsEvents.sessionCompleted({
+      correct: stats.correct,
+      incorrect: stats.incorrect,
+      duration_s: 0, // TODO: track session duration
+    });
 
     // Stop foreground service
     try {

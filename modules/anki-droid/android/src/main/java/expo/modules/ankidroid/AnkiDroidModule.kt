@@ -159,9 +159,15 @@ class AnkiDroidModule : Module() {
               if (name == null || name.startsWith("Default::")) continue
 
               val countsRaw = if (countsIdx >= 0) it.getString(countsIdx) else null
-              val dueCount = parseDeckCounts(countsRaw)
+              val counts = parseDeckCountsSeparate(countsRaw)
 
-              decks.add(mapOf("deckName" to name, "dueCount" to dueCount))
+              decks.add(mapOf(
+                "deckName" to name,
+                "dueCount" to (counts.new + counts.learn + counts.review),
+                "newCount" to counts.new,
+                "learnCount" to counts.learn,
+                "reviewCount" to counts.review
+              ))
             }
           }
         } finally {
@@ -379,15 +385,21 @@ class AnkiDroidModule : Module() {
     )
   }
 
-  // Parse deck_counts JSON — AnkiDroid returns "[new, lrn, rev]" or similar formats
-  private fun parseDeckCounts(raw: String?): Int {
-    if (raw == null) return 0
+  private data class DeckCounts(val new: Int, val learn: Int, val review: Int)
+
+  // Parse deck_counts JSON — AnkiDroid returns "[new, lrn, rev]" format
+  private fun parseDeckCountsSeparate(raw: String?): DeckCounts {
+    if (raw == null) return DeckCounts(0, 0, 0)
     return try {
-      // Format: "[2, 5, 10]" — sum all counts
       val cleaned = raw.trim().removePrefix("[").removeSuffix("]")
-      cleaned.split(",").sumOf { it.trim().toIntOrNull() ?: 0 }
+      val parts = cleaned.split(",").map { it.trim().toIntOrNull() ?: 0 }
+      DeckCounts(
+        new = parts.getOrElse(0) { 0 },
+        learn = parts.getOrElse(1) { 0 },
+        review = parts.getOrElse(2) { 0 }
+      )
     } catch (e: Exception) {
-      0
+      DeckCounts(0, 0, 0)
     }
   }
 

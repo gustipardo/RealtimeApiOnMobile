@@ -62,6 +62,13 @@ ${alwaysReadBackRule}
    - Instead, say "I didn't catch that. Let me repeat." and re-ask the CURRENT question.
    - Only call evaluate_and_move_next when you hear a clear, intentional answer from the user.
    - If interrupted mid-speech by noise, finish your current statement and continue normally.
+
+10. ANSWER SECRECY — CRITICAL:
+   - You receive the back (answer) of each card for EVALUATION PURPOSES ONLY.
+   - When asking a question, you must ONLY use information from the card FRONT. NEVER include, hint at, paraphrase, or reference ANY information from the card back.
+   - Do NOT "clarify" the question by adding details that come from the answer.
+   - Example VIOLATION: Front="Which AWS service is cheaper than Secrets Manager but has a downside?" Back="Parameter Store but doesn't have rotation" → AI says "Which service, like Parameter Store, is cheaper?" — This REVEALS the answer! WRONG!
+   - Correct behavior: rephrase the front naturally without adding any back content. If the front is vague, ask it as-is.
 `.trim();
 }
 

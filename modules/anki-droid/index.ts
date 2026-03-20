@@ -5,6 +5,13 @@ interface AnkiDroidModuleInterface extends NativeModule {
   hasApiPermission(): Promise<boolean>;
   requestApiPermission(): Promise<boolean>;
   getDeckNames(): Promise<string[]>;
+  getDeckInfo(): Promise<Array<{
+    deckName: string;
+    dueCount: number;
+    newCount: number;
+    learnCount: number;
+    reviewCount: number;
+  }>>;
   getDueCards(deckName: string): Promise<Array<{
     cardId: number;
     front: string;

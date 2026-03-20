@@ -3,6 +3,7 @@ import { View, Text, Pressable, Linking, AppState, Platform } from 'react-native
 import { useRouter } from 'expo-router';
 import { PermissionsAndroid } from 'react-native';
 import { ankiBridge } from '../../native/ankiBridge';
+import { requiresAuth } from '../../config/env';
 
 type PermissionStatus = 'pending' | 'granted' | 'denied';
 
@@ -103,7 +104,11 @@ export default function PermissionsScreen() {
   }
 
   function handleContinue() {
-    router.push('/(onboarding)/api-key');
+    if (requiresAuth()) {
+      router.push('/(onboarding)/sign-in');
+    } else {
+      router.push('/(onboarding)/api-key');
+    }
   }
 
   const allGranted =

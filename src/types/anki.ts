@@ -8,6 +8,9 @@ export interface AnkiCard {
 export interface DeckInfo {
   deckName: string;
   dueCount: number;
+  newCount: number;
+  learnCount: number;
+  reviewCount: number;
 }
 
 export interface BridgeError {
