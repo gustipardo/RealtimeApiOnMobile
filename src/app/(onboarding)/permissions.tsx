@@ -3,7 +3,8 @@ import { View, Text, Pressable, Linking, AppState, Platform } from 'react-native
 import { useRouter } from 'expo-router';
 import { PermissionsAndroid } from 'react-native';
 import { ankiBridge } from '../../native/ankiBridge';
-import { requiresAuth } from '../../config/env';
+import { requiresAuth, isDev } from '../../config/env';
+import { useSettingsStore } from '../../stores/useSettingsStore';
 
 type PermissionStatus = 'pending' | 'granted' | 'denied';
 
@@ -106,6 +107,11 @@ export default function PermissionsScreen() {
   function handleContinue() {
     if (requiresAuth()) {
       router.push('/(onboarding)/sign-in');
+    } else if (isDev()) {
+      // In dev mode, API keys come from .env — skip the API key screen
+      useSettingsStore.getState().setApiKeyStored(true);
+      useSettingsStore.getState().setOnboardingCompleted(true);
+      router.replace('/(main)/deck-select');
     } else {
       router.push('/(onboarding)/api-key');
     }

@@ -154,7 +154,14 @@ class GeminiManager {
       };
 
       this.ws.onclose = (event: any) => {
-        console.log(`[Gemini] WebSocket closed: code=${event?.code}, reason=${event?.reason}`);
+        const code = event?.code;
+        const reason = event?.reason || '(no reason)';
+        console.log(`[Gemini] WebSocket closed: code=${code}, reason=${reason}`);
+
+        // Emit a close event so pending waiters (e.g. updateSession) can
+        // fail fast instead of waiting for their 15 s timeout.
+        this.emitEvent('ws.closed', { code, reason });
+
         const currentState = useConnectionStore.getState().connectionState;
         if (currentState === 'connected' && !this.isReconnecting) {
           useConnectionStore.getState().setConnectionState('failed');
@@ -366,33 +373,44 @@ class GeminiManager {
       console.log('[Gemini] Setup model:', setup.model);
       console.log('[Gemini] Setup has tools:', !!(setup.tools));
       console.log('[Gemini] Setup has systemInstruction:', !!(setup.systemInstruction));
+      console.log('[Gemini] Setup payload (first 1000 chars):', setupPayload.substring(0, 1000));
       console.log('[Gemini] WS readyState:', this.ws?.readyState);
       this.ws?.send(setupPayload);
 
-      // Wait for setupComplete (emitted as session.updated) or error
+      // Wait for setupComplete (emitted as session.updated), error, or WS close
       await new Promise<void>((resolve, reject) => {
-        const timeout = setTimeout(() => {
+        const cleanup = () => {
+          clearTimeout(timeout);
           this.off('session.updated', handler);
           this.off('error', errorHandler);
+          this.off('ws.closed', closeHandler);
+        };
+
+        const timeout = setTimeout(() => {
+          cleanup();
           reject(new Error('Gemini setup timeout — no setupComplete received within 15s'));
         }, 15000);
 
         const handler = () => {
-          clearTimeout(timeout);
-          this.off('session.updated', handler);
-          this.off('error', errorHandler);
+          cleanup();
           resolve();
         };
 
         const errorHandler = (error: any) => {
-          clearTimeout(timeout);
-          this.off('session.updated', handler);
-          this.off('error', errorHandler);
+          cleanup();
           reject(new Error(`Gemini setup error: ${JSON.stringify(error)}`));
+        };
+
+        const closeHandler = (event: any) => {
+          cleanup();
+          reject(new Error(
+            `Gemini WebSocket closed during setup: code=${event.code}, reason=${event.reason}`
+          ));
         };
 
         this.on('session.updated', handler);
         this.on('error', errorHandler);
+        this.on('ws.closed', closeHandler);
       });
 
       this.isSetupDone = true;
@@ -496,18 +514,31 @@ class GeminiManager {
 
   waitForNextResponseDone(): Promise<void> {
     return new Promise((resolve, reject) => {
-      const timeout = setTimeout(() => {
+      const cleanup = () => {
+        clearTimeout(timeout);
         this.off('response.done', handler);
+        this.off('ws.closed', closeHandler);
+      };
+
+      const timeout = setTimeout(() => {
+        cleanup();
         reject(new Error('Timed out waiting for response.done'));
       }, 30000);
 
       const handler = () => {
-        clearTimeout(timeout);
-        this.off('response.done', handler);
+        cleanup();
         resolve();
       };
 
+      const closeHandler = (event: any) => {
+        cleanup();
+        reject(new Error(
+          `Gemini WebSocket closed while waiting for response: code=${event.code}, reason=${event.reason}`
+        ));
+      };
+
       this.on('response.done', handler);
+      this.on('ws.closed', closeHandler);
     });
   }
 
