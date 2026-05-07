@@ -1,0 +1,222 @@
+/**
+ * Layer 2 replay tests — full session orchestration with mocked Gemini
+ * and mocked AnkiDroid. Drives fixtures end-to-end and asserts on the
+ * write-back history + final stats.
+ *
+ * What this catches that Layer 1 unit tests can't:
+ *   - The handler-registration wiring (sessionManager → realtimeManager.on).
+ *   - The pendingCardAdvance dance (advance happens on response.done,
+ *     not on tool-call completion).
+ *   - Multi-turn state (lastAnsweredCardId carrying across turns for
+ *     override).
+ *   - Skipped answers correctly NOT advancing stats but still moving
+ *     the card pointer.
+ */
+
+import { mockGeminiManager } from '../mockGeminiManager';
+import { deckSimulator } from '../deckSimulator';
+
+// ---------------------------------------------------------------------------
+// Module mocks — must be at the top, jest hoists them.
+// ---------------------------------------------------------------------------
+
+jest.mock('expo-foreground-audio', () => ({
+  __esModule: true,
+  default: { addListener: jest.fn().mockReturnValue({ remove: jest.fn() }) },
+}));
+
+jest.mock('@react-native-async-storage/async-storage', () => ({
+  __esModule: true,
+  default: {
+    setItem: jest.fn().mockResolvedValue(undefined),
+    getItem: jest.fn().mockResolvedValue(null),
+    removeItem: jest.fn().mockResolvedValue(undefined),
+  },
+}));
+
+jest.mock('../../services/realtimeManager', () => ({
+  realtimeManager: require('../mockGeminiManager').mockGeminiManager,
+}));
+
+const mockAnswerCard = jest.fn().mockResolvedValue(true);
+const mockTriggerSync = jest.fn().mockResolvedValue(undefined);
+jest.mock('../../native/ankiBridge', () => ({
+  ankiBridge: {
+    answerCard: (...a: any[]) => mockAnswerCard(...a),
+    triggerSync: (...a: any[]) => mockTriggerSync(...a),
+  },
+}));
+
+// cardLoader functions delegate to the deckSimulator so card state stays
+// consistent across the session.
+jest.mock('../../services/cardLoader', () => {
+  const { deckSimulator } = require('../deckSimulator');
+  return {
+    loadDueCards: jest.fn(async (_deckName: string) => deckSimulator.cards),
+    getCurrentCard: jest.fn(() => deckSimulator.getCurrent()),
+    getNextCard: jest.fn(() => {
+      deckSimulator.advance();
+      return deckSimulator.getCurrent();
+    }),
+    peekNextCard: jest.fn(() => deckSimulator.peekNext()),
+    peekRemainingAfterAdvance: jest.fn(() => deckSimulator.peekRemainingAfterAdvance()),
+    getRemainingCardCount: jest.fn(() => deckSimulator.remaining()),
+    getTotalCardCount: jest.fn(() => deckSimulator.total()),
+    clearCards: jest.fn(),
+    advanceCacheIndex: jest.fn(() => deckSimulator.advance()),
+  };
+});
+
+jest.mock('../../services/foregroundAudioService', () => ({
+  startForegroundService: jest.fn().mockResolvedValue(undefined),
+  stopForegroundService: jest.fn().mockResolvedValue(undefined),
+  updateForegroundNotification: jest.fn().mockResolvedValue(undefined),
+  requestAudioFocus: jest.fn().mockResolvedValue(undefined),
+  abandonAudioFocus: jest.fn().mockResolvedValue(undefined),
+  clearAudioFocusPauseFlag: jest.fn(),
+  isServiceRunning: jest.fn().mockReturnValue(false),
+  wasPausedByAudioFocusLoss: jest.fn().mockReturnValue(false),
+}));
+
+jest.mock('../../services/analytics', () => ({
+  AnalyticsEvents: {
+    sessionStarted: jest.fn(),
+    sessionCompleted: jest.fn(),
+    sessionError: jest.fn(),
+    sessionReconnected: jest.fn(),
+  },
+}));
+
+// ---------------------------------------------------------------------------
+// Imports that need the mocks above
+// ---------------------------------------------------------------------------
+
+import { sessionManager } from '../../services/sessionManager';
+import { useSessionStore } from '../../stores/useSessionStore';
+import { useCardCacheStore } from '../../stores/useCardCacheStore';
+import { useConnectionStore } from '../../stores/useConnectionStore';
+import { runFixture } from '../scriptRunner';
+import {
+  happyPath,
+  mixedResults,
+  overrideIncorrectToCorrect,
+  overrideCorrectToIncorrect,
+  overrideNoChange,
+} from '../fixtures/scripts';
+
+const ctx = {
+  mockMgr: mockGeminiManager,
+  simulator: deckSimulator,
+  answerCardSpy: mockAnswerCard,
+  sessionManager: sessionManager as any,
+  useSessionStore,
+  useCardCacheStore,
+  useConnectionStore,
+};
+
+describe('Layer 2 — replay harness', () => {
+  describe('happy path: 3 cards all correct', () => {
+    it('writes pass=true for every card and stats are 3-0', async () => {
+      const result = await runFixture(happyPath, ctx);
+      expect(result.ankiWrites).toEqual([
+        { cardId: 1001, pass: true },
+        { cardId: 1002, pass: true },
+        { cardId: 1003, pass: true },
+      ]);
+      expect(result.finalStats).toEqual({ correct: 3, incorrect: 0 });
+    });
+  });
+
+  describe('mixed results: correct + incorrect + skip + correct', () => {
+    it('writes per-turn correctly and skipped does NOT trigger a write', async () => {
+      const result = await runFixture(mixedResults, ctx);
+      expect(result.ankiWrites).toEqual([
+        { cardId: 1001, pass: true },
+        { cardId: 1002, pass: false },
+        // no write for the skipped card
+        { cardId: 1004, pass: true },
+      ]);
+      expect(result.finalStats).toEqual({ correct: 2, incorrect: 1 });
+    });
+
+    it('records exactly one tool result per turn', async () => {
+      const result = await runFixture(mixedResults, ctx);
+      expect(result.toolResults).toHaveLength(4);
+    });
+  });
+
+  describe('override incorrect → correct', () => {
+    it('writes the original incorrect, then a corrective pass=true write', async () => {
+      const result = await runFixture(overrideIncorrectToCorrect, ctx);
+      expect(result.ankiWrites).toEqual([
+        { cardId: 1001, pass: false }, // initial wrong
+        { cardId: 1001, pass: true },  // override flips it
+        { cardId: 1002, pass: true },  // next card answered correctly
+      ]);
+      expect(result.finalStats).toEqual({ correct: 2, incorrect: 0 });
+    });
+
+    it('override tool-result reports success status', async () => {
+      const result = await runFixture(overrideIncorrectToCorrect, ctx);
+      const overrideToolResult = result.perTurn[1].toolResultAfter;
+      expect(overrideToolResult?.result?.status).toBe('success');
+    });
+  });
+
+  describe('override correct → incorrect (new bidirectional behavior)', () => {
+    it('writes the original correct, then a corrective pass=false write', async () => {
+      const result = await runFixture(overrideCorrectToIncorrect, ctx);
+      expect(result.ankiWrites).toEqual([
+        { cardId: 1001, pass: true },  // initial correct
+        { cardId: 1001, pass: false }, // override flips it
+        { cardId: 1002, pass: true },  // next card answered correctly
+      ]);
+      expect(result.finalStats).toEqual({ correct: 1, incorrect: 1 });
+    });
+  });
+
+  describe('override with nothing to flip', () => {
+    it('emits no_change and writes nothing to AnkiDroid', async () => {
+      const result = await runFixture(overrideNoChange, ctx);
+      expect(result.ankiWrites).toEqual([]);
+      const overrideToolResult = result.perTurn[0].toolResultAfter;
+      expect(overrideToolResult?.result?.status).toBe('no_change');
+    });
+  });
+
+  describe('cross-cutting invariants', () => {
+    it('never writes for a turn graded "skipped"', async () => {
+      const result = await runFixture(mixedResults, ctx);
+      // Find the skipped turn diagnostics — writes should be unchanged
+      // before vs after that turn.
+      const skippedIdx = mixedResults.turns.findIndex(
+        (t) => t.kind === 'answer' && t.aiGraded === 'skipped'
+      );
+      const writesBeforeSkip = result.perTurn[skippedIdx - 1]?.ankiWritesAfter ?? [];
+      const writesAfterSkip = result.perTurn[skippedIdx].ankiWritesAfter;
+      expect(writesAfterSkip).toEqual(writesBeforeSkip);
+    });
+
+    it('every turn in a fixture matches its expectWriteback hint', async () => {
+      // Validates the fixtures themselves against the runner — a meta-test
+      // that catches drift between fixture intent and harness behavior.
+      for (const fixture of [happyPath, mixedResults, overrideIncorrectToCorrect, overrideCorrectToIncorrect]) {
+        const result = await runFixture(fixture, ctx);
+        let cumulativeWrites = 0;
+        for (let i = 0; i < fixture.turns.length; i++) {
+          const turn = fixture.turns[i];
+          const expected = (turn as any).expectWriteback;
+          const writesAfter = result.perTurn[i].ankiWritesAfter;
+
+          if (expected === null || expected === undefined) {
+            expect(writesAfter.length).toBe(cumulativeWrites);
+          } else {
+            expect(writesAfter.length).toBe(cumulativeWrites + 1);
+            expect(writesAfter[cumulativeWrites]).toEqual(expected);
+            cumulativeWrites++;
+          }
+        }
+      }
+    });
+  });
+});
