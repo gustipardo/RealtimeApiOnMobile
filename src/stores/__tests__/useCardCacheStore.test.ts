@@ -2,9 +2,9 @@ import { useCardCacheStore } from '../useCardCacheStore';
 import type { AnkiCard } from '../../types/anki';
 
 const mockCards: AnkiCard[] = [
-  { cardId: 1, front: 'What is React?', back: 'A JS library', deckName: 'Dev' },
-  { cardId: 2, front: 'What is TypeScript?', back: 'Typed JS', deckName: 'Dev' },
-  { cardId: 3, front: 'What is Zustand?', back: 'State management', deckName: 'Dev' },
+  { cardId: 1, cardOrd: 0, front: 'What is React?', back: 'A JS library', deckName: 'Dev' },
+  { cardId: 2, cardOrd: 0, front: 'What is TypeScript?', back: 'Typed JS', deckName: 'Dev' },
+  { cardId: 3, cardOrd: 0, front: 'What is Zustand?', back: 'State management', deckName: 'Dev' },
 ];
 
 beforeEach(() => {
