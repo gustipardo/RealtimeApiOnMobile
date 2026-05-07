@@ -106,3 +106,25 @@ The app currently uses Beta endpoints. Update to GA:
 ### Study reminders
 - [ ] Push notification reminders for daily study (Firebase Cloud Messaging)
 - [ ] Configurable time in settings
+
+---
+
+## Recently shipped (2026-05-06 evening session)
+
+### Multi-card sessions (was: every session was 1 card long)
+- [x] Hybrid `getDueCards` in `AnkiDroidModule.kt`: schedule URI for the head card (correct `ord` for write-back) + `notes/?deckID=` URI for padding, deduped by noteId, capped at deck due-count.
+- [x] `getDeckDueCount(deckName)` helper.
+- [x] Test file `App/src/services/__tests__/sessionManager.start.test.ts`.
+- [x] VERIFIED on emulator (Aws Exam SA, 168 cards loaded).
+
+### Phone-call-style in-session notification
+- [x] Added POST_NOTIFICATIONS to runtime permission flow (`App/src/app/(onboarding)/permissions.tsx`).
+- [x] New notification channel `voice_session_v2` at `IMPORTANCE_HIGH` with `CATEGORY_CALL`, gold accent (`#E4A13F`).
+- [x] `▶` (`ic_media_play`) icon as the running indicator (rejected CallStyle's forced timer).
+- [x] Single-notification peek/revert mechanism: JS `AppState` listener triggers Kotlin `ACTION_HEADS_UP` → cancel + notify with "Tap to return…" body → `Handler.postDelayed` reverts to "Card N of M" after 3s.
+- [x] `startForegroundService` moved BEFORE `sendFirstCard` in `startSession` (was previously gated on AI's first reply, never ran when WebSocket dropped). Defensive fallback added to `resumeAfterReconnect`.
+- [ ] User visual sign-off on the final design + verification that heads-up re-fires on second/third minimize per session.
+
+### Known unfixed (out of scope for this session)
+- [ ] `App/src/native/__tests__/ankiBridge.test.ts` and `App/src/test-harness/__tests__/replay.test.ts` use the old 2-arg `answerCard(noteId, pass)` signature; need updating to the current 5-arg signature (8 failing tests).
+- [ ] `answerCard` write-back from earlier in this session day (column-name fix: `ord`/`answer_ease`) still UNVERIFIED end-to-end — sessions kept dropping the WebSocket before user could grade a card on the emulator.

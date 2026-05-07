@@ -1,6 +1,6 @@
 # Setup Guide
 
-This guide explains how to set up the **RealtimeApiOnMobile** project from scratch.
+This guide explains how to set up **Engram** (project slug: `RealtimeApiOnMobile` — pending rename, see `TODOLIST.md` P1) from scratch.
 
 ## Prerequisites
 
@@ -15,7 +15,7 @@ This guide explains how to set up the **RealtimeApiOnMobile** project from scrat
 
     ```bash
     git clone <repository_url>
-    cd RealtimeApiOnMobile
+    cd RealtimeApiOnMobile   # current on-disk slug; rename pending
     ```
 
 2.  **Install Dependencies:**
@@ -40,7 +40,11 @@ This guide explains how to set up the **RealtimeApiOnMobile** project from scrat
 
     *Note: Verify that `node_modules/expo-foreground-audio` and `node_modules/anki-droid` point to the correct directories.*
 
-4.  **Run the Android App:**
+4.  **AI provider key:**
+
+    The app uses Gemini Live as its single realtime backend. Add `GEMINI_API_KEY=...` to a `.env` file at the project root (read by `app.config.js` via `expo-constants`). No OpenAI key is required.
+
+5.  **Run the Android App:**
 
     Start the Metro bundler and launch the app on your connected Android emulator or device.
 

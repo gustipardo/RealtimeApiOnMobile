@@ -22,11 +22,7 @@ You have full decision-making authority on this project. When faced with choices
 
 Android-only Expo (SDK 54) + React Native app. Voice-powered study tutor that reads AnkiDroid flashcards aloud, listens to spoken answers, evaluates them, and advances through the deck.
 
-**Two AI backends, selectable at runtime:**
-- **OpenAI Realtime** via WebRTC (data channel for server events, ephemeral token from Cloud Function).
-- **Gemini Live** via WebSocket (`gemini-2.5-flash-native-audio-preview-12-2025`, native audio).
-
-Neither is dead code. The user toggles between them in the deck-select screen; the selection persists via `useSettingsStore.aiProvider`. All session code is written against a single `realtimeManager` Proxy that forwards to whichever backend is active.
+**Single AI backend: Gemini Live** via WebSocket (`gemini-2.5-flash-native-audio-preview-12-2025`, native audio). `realtimeManager` is a direct re-export of `geminiManager`. API key comes from `GEMINI_API_KEY` env var via `app.config.js`.
 
 App slug (`RealtimeApiOnMobile`) is a legacy name from when the app was OpenAI-only — rename to "Anki Conversacionales" is P1 in TODOLIST.md.
 
@@ -50,15 +46,15 @@ npx jest --testPathPattern="useSessionStore"
 ### Routing (Expo Router, file-based — `src/app/`)
 - `index.tsx` — Root redirect based on onboarding state
 - `(onboarding)/` — First-run flow: `index.tsx` (intro), `sign-in.tsx` (Firebase Google Sign-In), `permissions.tsx` (AnkiDroid API permission), `api-key.tsx` (dev fallback for API key entry)
-- `(main)/` — Main app: `deck-select.tsx` (deck list + OpenAI/Gemini toggle), `session.tsx` (study UI), `paywall.tsx` (trial expiry + Play Billing)
+- `(main)/` — Main app: `deck-select.tsx` (deck list + settings), `session.tsx` (study UI), `paywall.tsx` (trial expiry + Play Billing)
 
 ### Service Layer (`src/services/`)
 - **`sessionManager.ts`** — Central orchestrator. Starts session → loads AnkiDroid cards → configures AI prompt → registers event handlers → processes tool calls (`evaluate_and_move_next`, skip, override, end_session) → advances cards.
-- **`realtimeManager.ts`** — **Proxy/facade.** Forwards every call to `webrtcManager` or `geminiManager` based on `useSettingsStore.aiProvider`. `syncActiveProvider()` is called before each session start. Everything else in the app talks to this, not to the backend managers directly.
-- **`webrtcManager.ts`** — OpenAI Realtime backend. WebRTC peer connection, SDP negotiation, data channel for server events, mic muting, reconnect logic (3 attempts, 1s base delay). Uses GA endpoint `/v1/realtime/calls` in prod, Beta `/v1/realtime` in dev.
-- **`geminiManager.ts`** — Gemini Live backend. WebSocket (`wss://`) + native audio streaming (16 kHz input, 24 kHz output) via `expo-foreground-audio`. Mirrors the `webrtcManager` interface so the proxy can swap freely.
+- **`realtimeManager.ts`** — Thin re-export of `geminiManager` (3 lines). Everything in the app that imports `realtimeManager` actually talks to Gemini Live. Kept as a seam for re-introducing a multi-provider proxy later.
+- **`geminiManager.ts`** — Gemini Live backend. WebSocket (`wss://`) + native audio streaming (16 kHz input, 24 kHz output) via `expo-foreground-audio`.
+- **`micSource.ts`** — Mic abstraction. Real source is backed by `expo-foreground-audio`'s `startMicCapture`; swappable to `fakeMicSource` (replays PCM fixtures) when `APP_MODE=test`.
+- **`audioLevelTracker.ts`** — RMS-based VU meter. Reads PCM chunks from `micSource`, writes a normalized 0–1 level to `useAudioLevelStore` for the in-session UI.
 - **`cardLoader.ts`** — Loads due cards from AnkiDroid via `src/native/ankiBridge.ts`, manages the `useCardCacheStore` cache.
-- **`tokenService.ts`** — Fetches ephemeral OpenAI token from `getSessionToken` Cloud Function (prod), falls back to `.env` API key (dev). Exposes `isTokenError()` helper.
 - **`trialService.ts`** — Calls `checkTrialStatus` Cloud Function; returns days/sessions remaining + subscription status.
 - **`authService.ts`** — Firebase Auth wrapper (Google Sign-In, sign-out, current user).
 - **`billingService.ts`** — `react-native-iap` wrapper; calls `verifyPurchase` Cloud Function post-purchase (stubbed Google Play API verification per TODOLIST.md).
@@ -68,16 +64,15 @@ npx jest --testPathPattern="useSessionStore"
 ### State Management (Zustand stores in `src/stores/`)
 - **`useSessionStore`** — Session phase state machine: `idle → connecting → loading_cards → ready → studying → paused → completed/error`. Card index, stats, reconnect tracking.
 - **`useConnectionStore`** — Connection state (`idle|connecting|connected|reconnecting|failed|dropped`), reconnect attempt counter.
-- **`useSettingsStore`** — Persisted via AsyncStorage: `selectedDeck`, `onboardingCompleted`, `apiKeyStored`, `alwaysReadBack`, `darkMode`, **`aiProvider` (`'openai' | 'gemini'`)**, per-deck `deckInstructions`.
+- **`useSettingsStore`** — Persisted via AsyncStorage: `selectedDeck`, `onboardingCompleted`, `alwaysReadBack`, `darkMode`, per-deck `deckInstructions`.
 - **`useCardCacheStore`** — In-memory: current card index, cached cards array, `getCurrentCard()` / `getNextCard()` / `getRemainingCardCount()` accessors.
 
 ### Types (`src/types/`)
-- `ai.ts` — `AIProvider`, tool call types, session config.
+- `ai.ts` — Tool call types, session config.
 - `anki.ts` — `AnkiCard`, `DeckInfo`, `BridgeError`.
 - `session.ts` — `SessionPhase` enum, evaluation types.
 
 ### Utils (`src/utils/`)
-- `secureStorage.ts` — `expo-secure-store` wrapper.
 - `textUtils.ts` — string normalization helpers.
 
 ### Config (`src/config/`)
@@ -88,7 +83,8 @@ npx jest --testPathPattern="useSessionStore"
 - `ankiBridge.ts` — Typed wrapper over the `anki-droid` module: `isInstalled()`, `hasApiPermission()`, `requestApiPermission()`, `getDeckNames()`, `getDeckInfo()`, `getDueCards(deckName)`.
 
 ### Components (`src/components/`)
-- `CardDisplay.tsx` — The only component so far. Renders the current card (front/back depending on reveal state) during a session.
+- `CardDisplay.tsx` — Renders the current card (front/back depending on reveal state) during a session.
+- `EngramWordmark.tsx` — Brand wordmark used on onboarding / deck-select headers.
 
 ### Native Modules (`modules/`)
 Two local Expo modules (Android/Kotlin), linked as `file:` dependencies in `package.json`:
@@ -97,20 +93,18 @@ Two local Expo modules (Android/Kotlin), linked as `file:` dependencies in `pack
 
 ### Cloud Functions (`functions/src/`)
 Firebase Cloud Functions (TypeScript, Firebase Admin SDK):
-- **`getSessionToken`** — Authenticates user, checks trial (7 days / 10 sessions max) or subscription status, requests ephemeral token from OpenAI `/v1/realtime/client_secrets`, increments session count.
 - **`checkTrialStatus`** — Returns trial remaining days/sessions + subscription status.
 - **`verifyPurchase`** — Called post-purchase; Google Play Developer API verification is currently **stubbed** (see TODO in `functions/src/index.ts`).
 
 ### Key Data Flow
-1. User picks deck + provider → `sessionManager.startSession()` calls `realtimeManager.syncActiveProvider()`, then connects via the active backend and loads cards from AnkiDroid.
-2. AI receives system prompt + tools via data channel (OpenAI) or WebSocket message (Gemini) — see `src/config/prompts.ts`.
+1. User picks deck → `sessionManager.startSession()` connects via `geminiManager` and loads cards from AnkiDroid.
+2. AI receives system prompt + tools via WebSocket message — see `src/config/prompts.ts`.
 3. AI speaks the question; user answers into the mic.
 4. AI calls `evaluate_and_move_next` tool → `sessionManager` grades the card, fetches the next one, returns the result.
 5. Loop until the deck is exhausted or the user ends the session.
 
 ### Config
-- `app.config.js` merges `app.json` with runtime env (`OPENAI_API_KEY`, `GEMINI_API_KEY` from `.env`) via `expo-constants`.
-- API keys stored in `expo-secure-store` at runtime; `.env` is for dev convenience only.
+- `app.config.js` merges `app.json` with runtime env (`GEMINI_API_KEY` from `.env`) via `expo-constants`.
 - Styling: NativeWind (TailwindCSS for React Native). Note: `_design/` system specifies Unistyles v3 as the target — migration is pending.
 
 ## Other top-level files worth knowing
