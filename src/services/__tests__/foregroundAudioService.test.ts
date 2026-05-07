@@ -49,8 +49,8 @@ jest.mock('../../stores/useSessionStore', () => ({
   },
 }));
 
-jest.mock('../webrtcManager', () => ({
-  webrtcManager: {
+jest.mock('../realtimeManager', () => ({
+  realtimeManager: {
     setMicrophoneMuted: (...args: any[]) => mockSetMicrophoneMuted(...args),
   },
 }));

@@ -1,4 +1,5 @@
 import ExpoForegroundAudioModule from 'expo-foreground-audio';
+import { AppState } from 'react-native';
 import { useSessionStore } from '../stores/useSessionStore';
 import { realtimeManager as webrtcManager } from './realtimeManager';
 
@@ -14,6 +15,8 @@ import { realtimeManager as webrtcManager } from './realtimeManager';
 let listenersRegistered = false;
 /** Tracks whether the session was paused due to audio focus loss (vs user-initiated pause). */
 let pausedByAudioFocusLoss = false;
+/** Last AppState value seen — used to distinguish foreground→background transitions. */
+let lastAppState: string = AppState.currentState;
 
 /**
  * Start the foreground service with a notification.
@@ -110,6 +113,29 @@ function registerListeners(): void {
         sessionManager.endSessionFromNotification();
         break;
     }
+  });
+
+  // Trigger a transient heads-up banner when the app goes to background
+  // mid-session. Android suppresses heads-up animations for the persistent
+  // foreground-service notification (it's already in the shade and the
+  // system dedupes), so we post a *separate* short-lived notification that
+  // auto-cancels after 3 seconds. Net effect: WhatsApp-style "peek" — a
+  // banner slides in for ~3s, then collapses to the status bar, leaving
+  // only the persistent notification in the shade.
+  AppState.addEventListener('change', (nextState) => {
+    const wasForeground = lastAppState === 'active';
+    const isBackground = nextState === 'background' || nextState === 'inactive';
+    const prev = lastAppState;
+    lastAppState = nextState;
+    if (!wasForeground || !isBackground) return;
+
+    const running = ExpoForegroundAudioModule.isServiceRunning();
+    console.log(`[foregroundAudio] AppState ${prev}→${nextState}, serviceRunning=${running}`);
+    if (!running) return;
+
+    ExpoForegroundAudioModule.triggerHeadsUp().catch((err) => {
+      console.warn('[foregroundAudio] heads-up trigger failed:', err);
+    });
   });
 
   // Handle audio focus changes (phone calls, other audio apps)

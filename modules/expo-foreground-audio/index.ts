@@ -10,6 +10,10 @@ interface ExpoForegroundAudioInterface extends NativeModule<ForegroundAudioEvent
   startService(title: string, body: string): Promise<void>;
   stopService(): Promise<void>;
   updateNotification(title: string, body: string): Promise<void>;
+  // Posts a transient 3-second heads-up notification (WhatsApp-style peek)
+  // alongside the persistent foreground-service notification. Used when the
+  // app is minimized mid-session so the user sees a quick reminder banner.
+  triggerHeadsUp(): Promise<void>;
   isServiceRunning(): boolean;
   requestAudioFocus(): Promise<void>;
   abandonAudioFocus(): Promise<void>;

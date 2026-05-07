@@ -55,6 +55,19 @@ class ExpoForegroundAudioModule : Module() {
       Unit
     }
 
+    // Trigger the transient heads-up banner. Called from JS when the app
+    // goes to background mid-session — produces the WhatsApp-style 3-second
+    // peek that auto-collapses to the status bar.
+    AsyncFunction("triggerHeadsUp") {
+      if (ForegroundAudioService.isRunning) {
+        val intent = Intent(context, ForegroundAudioService::class.java).apply {
+          action = ForegroundAudioService.ACTION_HEADS_UP
+        }
+        context.startService(intent)
+      }
+      Unit
+    }
+
     Function("isServiceRunning") {
       ForegroundAudioService.isRunning
     }
