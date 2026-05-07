@@ -14,10 +14,15 @@ interface AnkiDroidModuleInterface extends NativeModule {
   }>>;
   getDueCards(deckName: string): Promise<Array<{
     cardId: number;
+    cardOrd: number;
     front: string;
     back: string;
     deckName: string;
   }>>;
+  answerCard(deckName: string, noteId: number, cardOrd: number, ease: number, timeTakenMs: number): Promise<{
+    updatedCards: number;
+    totalCards: number;
+  }>;
   triggerSync(): Promise<void>;
 }
 

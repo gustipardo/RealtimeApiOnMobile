@@ -5,6 +5,7 @@ export interface CardCacheStore {
   cards: AnkiCard[];
   currentIndex: number;
   setCards: (cards: AnkiCard[]) => void;
+  appendCards: (cards: AnkiCard[]) => number; // returns count actually appended (after dedupe)
   getCurrentCard: () => AnkiCard | undefined;
   getNextCard: () => AnkiCard | undefined;
   clear: () => void;
@@ -15,6 +16,15 @@ export const useCardCacheStore = create<CardCacheStore>((set, get) => ({
   currentIndex: 0,
 
   setCards: (cards) => set({ cards, currentIndex: 0 }),
+
+  appendCards: (incoming) => {
+    const { cards } = get();
+    const seen = new Set(cards.map((c) => c.cardId));
+    const fresh = incoming.filter((c) => !seen.has(c.cardId));
+    if (fresh.length === 0) return 0;
+    set({ cards: [...cards, ...fresh] });
+    return fresh.length;
+  },
 
   getCurrentCard: () => {
     const { cards, currentIndex } = get();

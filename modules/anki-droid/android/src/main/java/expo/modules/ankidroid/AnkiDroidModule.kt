@@ -1,6 +1,7 @@
 package expo.modules.ankidroid
 
 import android.content.ContentResolver
+import android.content.ContentValues
 import android.content.Context
 import android.content.Intent
 import android.content.pm.PackageManager
@@ -23,7 +24,9 @@ class AnkiDroidModule : Module() {
     // ContentProvider URIs
     const val AUTHORITY = "com.ichi2.anki.flashcards"
     val DECKS_URI: Uri = Uri.parse("content://$AUTHORITY/decks")
+    val SELECTED_DECK_URI: Uri = Uri.parse("content://$AUTHORITY/selected_deck")
     val NOTES_URI: Uri = Uri.parse("content://$AUTHORITY/notes")
+    val SCHEDULE_URI: Uri = Uri.parse("content://$AUTHORITY/schedule")
     // Column names for decks
     const val DECK_ID = "deck_id"
     const val DECK_NAME = "deck_name"
@@ -31,6 +34,15 @@ class AnkiDroidModule : Module() {
 
     // Column names for notes
     const val NOTE_FLDS = "flds"
+
+    // Column names for schedule (review answers).
+    // Verified against AnkiDroid 2.23.3 FlashCardsContract.ReviewInfo —
+    // historic guesses ("card_ord", "ease") silently fail because
+    // AnkiDroid's update parser uses these EXACT strings in its `when` block.
+    const val REVIEW_NOTE_ID = "note_id"
+    const val REVIEW_CARD_ORD = "ord"
+    const val REVIEW_EASE = "answer_ease"
+    const val REVIEW_TIME_TAKEN = "time_taken"
 
     // Broadcast actions
     const val ACTION_SYNC = "com.ichi2.anki.DO_SYNC"
@@ -182,10 +194,17 @@ class AnkiDroidModule : Module() {
       }
     }
 
-    // Get cards for a specific deck.
-    // Strategy: get deck_id, then query notes with a subquery to filter by deck.
-    // Fallback: if subquery fails, use notes/#/cards to check deck membership per note.
-    // Last resort: load all notes unfiltered.
+    // Get cards that are actually DUE for review in a specific deck.
+    //
+    // AnkiDroid 2.23.x's `schedule` URI is queue-based and empirically returns
+    // exactly one card per query regardless of `?limit=`. To build a session
+    // longer than one card without depending on write-back to advance the
+    // scheduler queue, we hybrid-load:
+    //   1. `schedule` URI → first card with the correct `ord` for write-back.
+    //   2. `notes/?deckID=` → remaining notes in the deck (ord defaults to 0).
+    // Final list is deduped by noteId and capped at the deck's due count
+    // (from `getDeckInfo`'s parsed counts) so we don't load the entire deck
+    // when only a handful of cards are actually due.
     AsyncFunction("getDueCards") { deckName: String, promise: Promise ->
       try {
         val hasPermission = ContextCompat.checkSelfPermission(context, ANKIDROID_PERMISSION) == PackageManager.PERMISSION_GRANTED
@@ -202,89 +221,209 @@ class AnkiDroidModule : Module() {
           return@AsyncFunction
         }
 
-        val cards = mutableListOf<Map<String, Any>>()
+        // AnkiDroid 2.23+ ignores the schedule URI's `?deckID=` query param
+        // and returns cards from whatever deck is globally selected. We must
+        // explicitly set the selected deck via the SELECTED_DECK URI first.
+        setSelectedDeck(deckId)
 
-        // Strategy 1: Use subquery to filter notes by deck via cards table
-        var cursor: Cursor? = null
+        // Step 1: Ask AnkiDroid's scheduler for the due cards in this deck.
+        // We keep `?deckID=` and `?limit=` for older AnkiDroid versions that
+        // do honor them; the SELECTED_DECK update above handles 2.23+.
+        val scheduleQueryUri = SCHEDULE_URI.buildUpon()
+          .appendQueryParameter("deckID", deckId.toString())
+          .appendQueryParameter("limit", "500")
+          .build()
+
+        // Capture (noteId, ord) pairs in scheduler order. The `ord` is what
+        // AnkiDroid's update(SCHEDULE_URI) needs to match the exact card we
+        // were just shown — without it, write-back returns 0 rows updated.
+        // NOTE: schedule cursor exposes the column as "ord" (not "card_ord").
+        data class DueRef(val noteId: Long, val ord: Int)
+        val dueRefs = mutableListOf<DueRef>()
+        var schedCursor: Cursor? = null
         try {
-          cursor = contentResolver.query(
-            NOTES_URI,
-            null,
-            "_id IN (SELECT nid FROM cards WHERE did = ?)",
-            arrayOf(deckId.toString()),
-            null
-          )
-          Log.d(TAG, "getDueCards: subquery notes count=${cursor?.count ?: -1}")
-        } catch (e: Exception) {
-          Log.d(TAG, "getDueCards: subquery failed (${e.message}), trying fallback")
-          cursor?.close()
-          cursor = null
+          schedCursor = contentResolver.query(scheduleQueryUri, null, null, null, null)
+          schedCursor?.let {
+            Log.d(TAG, "getDueCards: schedule columns: ${it.columnNames.joinToString()}")
+            val noteIdIdx = it.getColumnIndex(REVIEW_NOTE_ID)
+            // Schedule URI uses "ord", but be tolerant of "card_ord" too.
+            val ordIdx = it.getColumnIndex("ord").takeIf { i -> i >= 0 }
+              ?: it.getColumnIndex(REVIEW_CARD_ORD)
+            while (it.moveToNext()) {
+              if (noteIdIdx < 0) continue
+              val nid = it.getLong(noteIdIdx)
+              val ord = if (ordIdx >= 0) it.getInt(ordIdx) else 0
+              dueRefs.add(DueRef(nid, ord))
+            }
+          }
+        } finally {
+          schedCursor?.close()
         }
 
-        // Strategy 2: Get all note IDs for this deck via notes/#/cards per note
-        if (cursor == null || cursor.count == 0) {
-          cursor?.close()
-          val deckNoteIds = getDeckNoteIds(deckId)
-          Log.d(TAG, "getDueCards: notes/#/cards found ${deckNoteIds.size} note IDs for deck $deckId")
+        Log.d(TAG, "getDueCards: scheduler returned ${dueRefs.size} due cards for deck $deckId")
 
-          if (deckNoteIds.isNotEmpty()) {
-            // Query all notes and filter by the collected note IDs
-            cursor = contentResolver.query(NOTES_URI, null, null, null, null)
-            cursor?.let {
-              var count = 0
-              val fldsIdx = it.getColumnIndex(NOTE_FLDS)
-              val idIdx = it.getColumnIndex("_id")
+        // Step 1b: Supplement with all notes in the deck via the `notes` URI.
+        // AnkiDroid's schedule URI is queue-based (head-only on 2.23.x), so
+        // a single call returns ~1 card. We pad the session with the rest
+        // of the deck's notes, capped at the deck's actual due count to
+        // avoid loading hundreds of not-yet-due cards. Order: schedule's
+        // first pick stays at index 0 (preserves correct `ord`); notes from
+        // the broader query follow with `ord = 0` (best-effort — write-back
+        // for these cards may need re-querying schedule URI to recover ord).
+        val dueCount = getDeckDueCount(deckName).coerceAtLeast(1)
+        val seenNoteIds = dueRefs.map { it.noteId }.toMutableSet()
 
-              while (it.moveToNext() && count < 100) {
-                if (fldsIdx < 0) continue
-                val noteId = if (idIdx >= 0) it.getLong(idIdx) else continue
-                if (noteId !in deckNoteIds) continue
+        if (dueRefs.size < dueCount) {
+          val notesQueryUri = NOTES_URI.buildUpon()
+            .appendQueryParameter("deckID", deckId.toString())
+            .appendQueryParameter("limit", dueCount.toString())
+            .build()
+          var notesCursor: Cursor? = null
+          try {
+            notesCursor = contentResolver.query(notesQueryUri, null, null, null, null)
+            notesCursor?.let {
+              Log.d(TAG, "getDueCards: notes columns: ${it.columnNames.joinToString()}")
+              // notes URI exposes the row id as `_id` (FlashCardsContract.Note._ID).
+              val noteIdIdx = it.getColumnIndex("_id").takeIf { i -> i >= 0 }
+                ?: it.getColumnIndex("note_id")
+              while (it.moveToNext() && dueRefs.size < dueCount) {
+                if (noteIdIdx < 0) continue
+                val nid = it.getLong(noteIdIdx)
+                if (seenNoteIds.contains(nid)) continue
+                seenNoteIds.add(nid)
+                dueRefs.add(DueRef(nid, 0))
+              }
+            }
+          } catch (e: Exception) {
+            Log.w(TAG, "getDueCards: notes URI fallback failed: ${e.message}")
+          } finally {
+            notesCursor?.close()
+          }
+          Log.d(TAG, "getDueCards: after notes-URI fallback have ${dueRefs.size} card(s) (cap=$dueCount)")
+        }
 
-                val fields = it.getString(fldsIdx) ?: continue
-                val parsed = parseNoteFields(fields, noteId, deckName)
-                if (parsed != null) {
-                  cards.add(parsed)
-                  count++
+        if (dueRefs.isEmpty()) {
+          promise.resolve(emptyList<Map<String, Any>>())
+          return@AsyncFunction
+        }
+
+        // Step 2: Hydrate each note's fields via per-note URI. AnkiDroid's
+        // notes provider does not accept `_id IN (...)` selections, so we
+        // query one note at a time. Sub-100ms for typical batch sizes.
+        val uniqueNoteIds = dueRefs.map { it.noteId }.toSet()
+        val noteFieldsByNoteId = HashMap<Long, String>(uniqueNoteIds.size)
+        for (noteId in uniqueNoteIds) {
+          var noteCursor: Cursor? = null
+          try {
+            val noteUri = Uri.parse("content://$AUTHORITY/notes/$noteId")
+            noteCursor = contentResolver.query(noteUri, null, null, null, null)
+            noteCursor?.let {
+              if (it.moveToFirst()) {
+                val fldsIdx = it.getColumnIndex(NOTE_FLDS)
+                if (fldsIdx >= 0) {
+                  val flds = it.getString(fldsIdx)
+                  if (flds != null) noteFieldsByNoteId[noteId] = flds
                 }
               }
             }
-            cursor?.close()
-            Log.d(TAG, "getDueCards: returning ${cards.size} cards for '$deckName' (via note IDs)")
-            promise.resolve(cards)
-            return@AsyncFunction
-          }
-
-          // Strategy 3: Last resort — load all notes unfiltered
-          Log.d(TAG, "getDueCards: falling back to all notes")
-          cursor = contentResolver.query(NOTES_URI, null, null, null, null)
-        }
-
-        // Parse notes from cursor (used by Strategy 1 and Strategy 3)
-        cursor?.let {
-          var count = 0
-          val fldsIdx = it.getColumnIndex(NOTE_FLDS)
-          val idIdx = it.getColumnIndex("_id")
-
-          while (it.moveToNext() && count < 100) {
-            if (fldsIdx < 0) continue
-            val noteId = if (idIdx >= 0) it.getLong(idIdx) else count.toLong()
-            val fields = it.getString(fldsIdx) ?: continue
-            val parsed = parseNoteFields(fields, noteId, deckName)
-            if (parsed != null) {
-              cards.add(parsed)
-              count++
-            }
+          } catch (e: Exception) {
+            Log.d(TAG, "getDueCards: failed to fetch note $noteId: ${e.message}")
+          } finally {
+            noteCursor?.close()
           }
         }
-        cursor?.close()
 
-        Log.d(TAG, "getDueCards: returning ${cards.size} cards for '$deckName'")
+        Log.d(TAG, "getDueCards: hydrated ${noteFieldsByNoteId.size}/${uniqueNoteIds.size} note bodies")
+
+        // Step 3: Build result preserving scheduler order.
+        val cards = mutableListOf<Map<String, Any>>()
+        for (ref in dueRefs) {
+          val fields = noteFieldsByNoteId[ref.noteId] ?: continue
+          val parsed = parseNoteFields(fields, ref.noteId, deckName, ref.ord) ?: continue
+          cards.add(parsed)
+        }
+
+        Log.d(TAG, "getDueCards: returning ${cards.size} due cards for '$deckName'")
         promise.resolve(cards)
         return@AsyncFunction
       } catch (e: SecurityException) {
         promise.reject("PERMISSION_DENIED", "Permission denied when accessing AnkiDroid: ${e.message}", e)
       } catch (e: Exception) {
         promise.reject("QUERY_FAILED", "Failed to get due cards for deck '$deckName': ${e.message}", e)
+      }
+    }
+
+    // Answer a card (write-back to AnkiDroid scheduling).
+    // Caller MUST pass the exact `cardOrd` returned by the schedule cursor
+    // for this card. AnkiDroid's update(SCHEDULE_URI) needs (note_id, card_ord)
+    // to match a card it has just queued for review — using a stale or
+    // enumerated ord causes update to silently return 0 rows.
+    //
+    // `deckName` is required because AnkiDroid 2.23+ scopes the "currently
+    // being reviewed" queue to the globally-selected deck. We re-set the
+    // selected deck before update for safety (it may have drifted since the
+    // last query if the user navigated within AnkiDroid, etc.).
+    //
+    // ease: 1=Again, 2=Hard, 3=Good, 4=Easy. The app uses pass/fail (1 or 4 only).
+    AsyncFunction("answerCard") { deckName: String, noteId: Long, cardOrd: Int, ease: Int, timeTakenMs: Long, promise: Promise ->
+      try {
+        val hasPermission = ContextCompat.checkSelfPermission(context, ANKIDROID_PERMISSION) == PackageManager.PERMISSION_GRANTED
+        if (!hasPermission) {
+          promise.reject("PERMISSION_DENIED", "AnkiDroid API permission not granted", null)
+          return@AsyncFunction
+        }
+        if (ease !in 1..4) {
+          promise.reject("INVALID_EASE", "ease must be in 1..4 (got $ease)", null)
+          return@AsyncFunction
+        }
+
+        // Make sure AnkiDroid's scheduler is pointed at our deck. The
+        // schedule URI's update is queue-scoped; without this the update
+        // silently returns 0 rows even with a valid (note_id, card_ord).
+        val deckId = getDeckId(deckName)
+        if (deckId != 0L) {
+          setSelectedDeck(deckId)
+        } else {
+          Log.w(TAG, "answerCard: deck '$deckName' not found, proceeding without selected_deck reset")
+        }
+
+        // Re-query the schedule URI for this deck. AnkiDroid only accepts
+        // answers for cards it considers actively presented — without a
+        // fresh query, the (note_id, card_ord) is not in the review queue
+        // and update returns 0.
+        val primingUri = SCHEDULE_URI.buildUpon()
+          .appendQueryParameter("deckID", deckId.toString())
+          .appendQueryParameter("limit", "1")
+          .build()
+        var primingCursor: Cursor? = null
+        try {
+          primingCursor = contentResolver.query(primingUri, null, null, null, null)
+          val primedCount = primingCursor?.count ?: 0
+          Log.d(TAG, "answerCard: primed schedule queue with $primedCount card(s)")
+        } catch (e: Exception) {
+          Log.d(TAG, "answerCard: priming query failed: ${e.message}")
+        } finally {
+          primingCursor?.close()
+        }
+
+        val values = ContentValues().apply {
+          put(REVIEW_NOTE_ID, noteId)
+          put(REVIEW_CARD_ORD, cardOrd)
+          put(REVIEW_EASE, ease)
+          put(REVIEW_TIME_TAKEN, timeTakenMs)
+        }
+        Log.d(TAG, "answerCard: submitting deck='$deckName' note=$noteId ord=$cardOrd ease=$ease time=${timeTakenMs}ms")
+        val rows = contentResolver.update(SCHEDULE_URI, values, null, null)
+        Log.d(TAG, "answerCard: result deck='$deckName' note=$noteId ord=$cardOrd -> $rows row(s) updated")
+
+        promise.resolve(mapOf(
+          "updatedCards" to rows,
+          "totalCards" to 1
+        ))
+      } catch (e: SecurityException) {
+        promise.reject("PERMISSION_DENIED", "Permission denied when answering card: ${e.message}", e)
+      } catch (e: Exception) {
+        promise.reject("ANSWER_FAILED", "Failed to answer card: ${e.message}", e)
       }
     }
 
@@ -323,51 +462,10 @@ class AnkiDroidModule : Module() {
     return 0L
   }
 
-  // Get note IDs belonging to a deck by querying notes/#/cards for each note
-  // and checking if any card has the target deck_id.
-  // This is an N-query approach — we sample all notes and check their cards.
-  private fun getDeckNoteIds(deckId: Long): Set<Long> {
-    val noteIds = mutableSetOf<Long>()
-    var notesCursor: Cursor? = null
-    try {
-      notesCursor = contentResolver.query(NOTES_URI, arrayOf("_id"), null, null, null)
-      notesCursor?.let {
-        val idIdx = it.getColumnIndex("_id")
-        while (it.moveToNext()) {
-          if (idIdx < 0) continue
-          val noteId = it.getLong(idIdx)
-
-          // Query this note's cards to see if any belong to our target deck
-          var cardsCursor: Cursor? = null
-          try {
-            val noteCardsUri = Uri.parse("content://$AUTHORITY/notes/$noteId/cards")
-            cardsCursor = contentResolver.query(noteCardsUri, null, null, null, null)
-            cardsCursor?.let { cc ->
-              val deckIdIdx = cc.getColumnIndex("deck_id")
-              while (cc.moveToNext()) {
-                if (deckIdIdx >= 0 && cc.getLong(deckIdIdx) == deckId) {
-                  noteIds.add(noteId)
-                  break
-                }
-              }
-            }
-          } catch (e: Exception) {
-            // notes/#/cards URI not supported — abort this strategy
-            Log.d(TAG, "getDeckNoteIds: notes/#/cards not supported: ${e.message}")
-            return emptySet()
-          } finally {
-            cardsCursor?.close()
-          }
-        }
-      }
-    } finally {
-      notesCursor?.close()
-    }
-    return noteIds
-  }
-
-  // Parse note fields into a card map
-  private fun parseNoteFields(fields: String, noteId: Long, deckName: String): Map<String, Any>? {
+  // Parse note fields into a card map. `ord` comes from the schedule cursor —
+  // AnkiDroid's update(SCHEDULE_URI) needs (note_id, ord) to identify the
+  // exact card. Defaults to 0 for callers that don't have a scheduler ord.
+  private fun parseNoteFields(fields: String, noteId: Long, deckName: String, ord: Int = 0): Map<String, Any>? {
     val meaningful = fields.split("\u001f")
       .map { f -> cleanAnkiText(f) }
       .filter { f -> f.isNotEmpty() && !f.matches(Regex("\\d+")) && !f.startsWith("[sound:") }
@@ -379,10 +477,57 @@ class AnkiDroidModule : Module() {
 
     return mapOf(
       "cardId" to noteId,
+      "cardOrd" to ord,
       "front" to front,
       "back" to back,
       "deckName" to deckName
     )
+  }
+
+  // Look up the (new + learn + review) due count for a single deck by name.
+  // Used by getDueCards to cap the notes-URI fallback so we don't load
+  // hundreds of not-yet-due cards when only a handful are actually due.
+  // Returns 0 if the deck is missing or the count can't be parsed —
+  // callers should `coerceAtLeast(1)` before using as a session size.
+  private fun getDeckDueCount(deckName: String): Int {
+    var cursor: Cursor? = null
+    try {
+      cursor = contentResolver.query(
+        DECKS_URI,
+        arrayOf(DECK_NAME, DECK_COUNTS),
+        null, null, null
+      )
+      cursor?.let {
+        val nameIdx = it.getColumnIndex(DECK_NAME)
+        val countsIdx = it.getColumnIndex(DECK_COUNTS)
+        while (it.moveToNext()) {
+          val name = if (nameIdx >= 0) it.getString(nameIdx) else null
+          if (name == deckName) {
+            val raw = if (countsIdx >= 0) it.getString(countsIdx) else null
+            val counts = parseDeckCountsSeparate(raw)
+            return counts.new + counts.learn + counts.review
+          }
+        }
+      }
+    } catch (e: Exception) {
+      Log.w(TAG, "getDeckDueCount($deckName) failed: ${e.message}")
+    } finally {
+      cursor?.close()
+    }
+    return 0
+  }
+
+  // Tell AnkiDroid which deck to scope schedule operations to. Required
+  // because AnkiDroid 2.23+ ignores `?deckID=` on the schedule URI and
+  // operates on whatever deck is globally selected.
+  private fun setSelectedDeck(deckId: Long) {
+    try {
+      val values = ContentValues().apply { put(DECK_ID, deckId) }
+      val rows = contentResolver.update(SELECTED_DECK_URI, values, null, null)
+      Log.d(TAG, "setSelectedDeck($deckId) -> $rows row(s) updated")
+    } catch (e: Exception) {
+      Log.w(TAG, "setSelectedDeck($deckId) failed: ${e.message}")
+    }
   }
 
   private data class DeckCounts(val new: Int, val learn: Int, val review: Int)

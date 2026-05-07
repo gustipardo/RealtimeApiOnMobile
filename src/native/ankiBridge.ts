@@ -91,6 +91,7 @@ export const ankiBridge = {
       console.log(`[ankiBridge] getDueCards('${deckName}') → ${rawCards.length} cards`);
       return rawCards.map((card: any) => ({
         cardId: card.cardId,
+        cardOrd: card.cardOrd ?? 0,
         front: card.front,
         back: card.back,
         deckName: card.deckName,
@@ -98,6 +99,43 @@ export const ankiBridge = {
     } catch (error) {
       console.error(`[ankiBridge] getDueCards('${deckName}') error:`, error);
       throw createBridgeError('QUERY_FAILED', `Failed to get due cards: ${error}`);
+    }
+  },
+
+  /**
+   * Write a pass/fail answer for a card back to AnkiDroid.
+   * `deckName`, `noteId`, and `cardOrd` MUST come from the same getDueCards
+   * result — AnkiDroid scopes the schedule update queue to the globally-
+   * selected deck plus the (note_id, card_ord) pair it just presented.
+   * Using a stale ord or wrong deck causes the update to silently return 0.
+   * Per CU-11: retries once on failure, never throws — session must keep going.
+   * @returns true if the card was updated, false otherwise.
+   */
+  async answerCard(deckName: string, noteId: number, cardOrd: number, pass: boolean, timeTakenMs = 0): Promise<boolean> {
+    // Pass/fail tutor model → ease=4 (Easy) for pass, ease=1 (Again) for fail.
+    const ease = pass ? 4 : 1;
+    const attempt = async (): Promise<boolean> => {
+      const result = await AnkiDroidModule.answerCard(deckName, noteId, cardOrd, ease, timeTakenMs);
+      return result.updatedCards > 0;
+    };
+
+    try {
+      const ok = await attempt();
+      console.log(`[ankiBridge] answerCard(deck='${deckName}', note=${noteId}, ord=${cardOrd}, pass=${pass}) → ${ok ? 'ok' : 'no rows'}`);
+      if (ok) return true;
+    } catch (error) {
+      console.warn(`[ankiBridge] answerCard(note=${noteId}) attempt 1 failed:`, error);
+    }
+
+    // Retry once after 500ms (CU-11 spec).
+    await new Promise((resolve) => setTimeout(resolve, 500));
+    try {
+      const ok = await attempt();
+      console.log(`[ankiBridge] answerCard(deck='${deckName}', note=${noteId}, ord=${cardOrd}, pass=${pass}) retry → ${ok ? 'ok' : 'no rows'}`);
+      return ok;
+    } catch (error) {
+      console.error(`[ankiBridge] answerCard(note=${noteId}) retry failed, giving up:`, error);
+      return false;
     }
   },
 

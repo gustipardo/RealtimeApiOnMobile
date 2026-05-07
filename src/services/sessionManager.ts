@@ -1,12 +1,13 @@
-import { realtimeManager as webrtcManager, syncActiveProvider } from './realtimeManager';
+import { realtimeManager as webrtcManager } from './realtimeManager';
 import { loadDueCards, getCurrentCard, getNextCard, getRemainingCardCount, getTotalCardCount, clearCards, peekNextCard, peekRemainingAfterAdvance, advanceCacheIndex } from './cardLoader';
 import { useSessionStore } from '../stores/useSessionStore';
 import { useSettingsStore } from '../stores/useSettingsStore';
 import { useConnectionStore } from '../stores/useConnectionStore';
+import { useCardCacheStore } from '../stores/useCardCacheStore';
 import { ankiBridge } from '../native/ankiBridge';
 import { getSystemPrompt, allTools, getInitialMessage, getResumeMessage, formatToolResult } from '../config/prompts';
-import { startForegroundService, stopForegroundService, updateForegroundNotification, requestAudioFocus, clearAudioFocusPauseFlag } from './foregroundAudioService';
-import { isTokenError } from './tokenService';
+import { startForegroundService, stopForegroundService, updateForegroundNotification, requestAudioFocus, clearAudioFocusPauseFlag, isServiceRunning } from './foregroundAudioService';
+import { startAudioLevelTracking, stopAudioLevelTracking } from './audioLevelTracker';
 import { AnalyticsEvents } from './analytics';
 
 /**
@@ -30,6 +31,15 @@ class SessionManager {
   private pendingCardAdvance = false;
 
   /**
+   * AnkiDroid (note_id, card_ord) of the most recently evaluated card.
+   * Captured at evaluate time because by the time the override tool fires,
+   * currentCard already points at card N+1. Both pieces are needed for the
+   * write-back update — see ankiBridge.answerCard.
+   */
+  private lastAnsweredCardId: number | null = null;
+  private lastAnsweredCardOrd: number | null = null;
+
+  /**
    * Start a new study session
    */
   async startSession(): Promise<void> {
@@ -39,9 +49,6 @@ class SessionManager {
     if (!selectedDeck) {
       throw new Error('No deck selected');
     }
-
-    // Pick the right AI backend before anything else
-    syncActiveProvider();
 
     // Reset session state
     resetSession();
@@ -53,6 +60,12 @@ class SessionManager {
         transitionTo('connecting', 'startSession');
         await webrtcManager.connect();
       }
+
+      // 1b. Start RMS-based mic level tracking. Independent of mute —
+      //     we want the meter live even when sessionManager has muted
+      //     the send path so the user can see "is my mic delivering
+      //     audio at all?"
+      startAudioLevelTracking();
 
       // 2. Mute microphone during setup to prevent default server_vad
       //    from picking up audio before our session config is applied.
@@ -80,6 +93,24 @@ class SessionManager {
       // 5c. Subscribe to connection state changes for network-loss detection
       this.subscribeToConnectionState();
 
+      // 5d. Start foreground service NOW — before sendFirstCard. The phone-call-style
+      // notification needs to be live the moment the user commits to a session, not
+      // gated on the AI's first response completing. Previously this ran as the last
+      // step (after sendFirstCard's waitForNextResponseDone): if the WebSocket
+      // dropped during that wait, auto-reconnect kicked in and the service never
+      // started — user saw a session running with no notification when minimized.
+      console.log('[SessionManager] starting foreground service (early)…');
+      try {
+        await startForegroundService(
+          'Voice Study Session',
+          `Card 1 of ${cards.length}`
+        );
+        console.log('[SessionManager] foreground service start resolved');
+      } catch (fgError) {
+        console.warn('[SessionManager] Failed to start foreground service:', fgError);
+        // Non-fatal: session works without it, just no background audio
+      }
+
       // 6. Send first card to AI, wait for first response, then enable VAD
       const firstCard = getCurrentCard();
       if (firstCard) {
@@ -95,19 +126,9 @@ class SessionManager {
       // Track session start
       AnalyticsEvents.sessionStarted(selectedDeck, cards.length);
 
-      // 8. Start foreground service for background audio
-      try {
-        await startForegroundService(
-          'Voice Study Session',
-          `Card 1 of ${cards.length}`
-        );
-      } catch (fgError) {
-        console.warn('[SessionManager] Failed to start foreground service:', fgError);
-        // Non-fatal: session works without it, just no background audio
-      }
-
     } catch (error: any) {
       AnalyticsEvents.sessionError(error?.message || 'start_failed');
+      stopAudioLevelTracking();
       transitionTo('error', 'start_failed');
       throw error;
     }
@@ -373,6 +394,23 @@ class SessionManager {
     const totalCards = getTotalCardCount();
     await this.configureAISession(selectedDeck, totalCards);
 
+    // 1a. Defensive: start the foreground notification if it didn't get to run
+    // during the original startSession (e.g. WebSocket dropped while we were
+    // waiting on the AI's first response). startForegroundService is idempotent
+    // for an already-running service — the underlying ACTION_START intent just
+    // updates the existing notification.
+    if (!isServiceRunning()) {
+      try {
+        const completedSoFar = useSessionStore.getState().stats.correct + useSessionStore.getState().stats.incorrect;
+        await startForegroundService(
+          'Voice Study Session',
+          `Card ${completedSoFar + 1} of ${totalCards}`
+        );
+      } catch (fgError) {
+        console.warn('[SessionManager] Failed to start foreground service on resume:', fgError);
+      }
+    }
+
     // 3. Re-register event handlers (they were preserved during reconnect
     //    via cleanupConnection, but the new data channel dispatches fresh
     //    events so the handlers are still valid)
@@ -454,11 +492,45 @@ class SessionManager {
     // Get current card's back for feedback
     const currentCard = getCurrentCard();
     const answeredCardBack = currentCard?.back || null;
+    const answeredCardId = currentCard?.cardId ?? null;
+    const answeredCardOrd = currentCard?.cardOrd ?? null;
 
-    // Record answer (except for skipped)
+    // Record answer + AWAIT write-back. AnkiDroid's scheduler can only
+    // hand us the next due card after the previous one is graded, so the
+    // write-back must complete before we re-query for the next card.
     if (user_response_quality !== 'skipped') {
       recordAnswer(user_response_quality as 'correct' | 'incorrect');
       transitionTo('evaluating', 'tool_called');
+
+      const { selectedDeck: deckForAnswer } = useSettingsStore.getState();
+      if (answeredCardId != null && answeredCardOrd != null && deckForAnswer) {
+        this.lastAnsweredCardId = answeredCardId;
+        this.lastAnsweredCardOrd = answeredCardOrd;
+        const pass = user_response_quality === 'correct';
+        try {
+          await ankiBridge.answerCard(deckForAnswer, answeredCardId, answeredCardOrd, pass);
+        } catch (err) {
+          console.warn('[SessionManager] write-back unexpected error:', err);
+        }
+      }
+    }
+
+    // Re-query AnkiDroid for the next due card. The schedule URI returns
+    // one card per call, so a fresh fetch after each answer is required —
+    // we cannot preload the whole session upfront.
+    const { selectedDeck } = useSettingsStore.getState();
+    if (selectedDeck) {
+      try {
+        const fresh = await ankiBridge.getDueCards(selectedDeck);
+        if (fresh.length > 0) {
+          const appended = useCardCacheStore.getState().appendCards(fresh);
+          console.log(`[SessionManager] re-fetched ${fresh.length} due card(s), appended ${appended} new`);
+        } else {
+          console.log('[SessionManager] re-fetched: scheduler returned no more due cards');
+        }
+      } catch (err) {
+        console.warn('[SessionManager] re-fetch failed:', err);
+      }
     }
 
     // Peek at next card WITHOUT advancing — the visual card stays on
@@ -501,34 +573,52 @@ class SessionManager {
   }
 
   /**
-   * Handle override_evaluation tool - correct previous answer
+   * Handle override_evaluation tool — flip the previous answer in either
+   * direction (incorrect→correct or correct→incorrect). The latest write
+   * to AnkiDroid drives the next due date, which is what we want.
    */
-  private async handleOverrideEvaluation(callId: string, _args: any): Promise<void> {
-    console.log('[SessionManager] Override evaluation - marking previous as correct');
+  private async handleOverrideEvaluation(callId: string, args: any): Promise<void> {
+    const overrideTo: 'correct' | 'incorrect' = args?.override_to === 'incorrect' ? 'incorrect' : 'correct';
+    console.log(`[SessionManager] Override evaluation → ${overrideTo}`);
 
     const { stats } = useSessionStore.getState();
+    const canFlip = overrideTo === 'correct' ? stats.incorrect > 0 : stats.correct > 0;
 
-    // Only override if there was a previous incorrect answer
-    if (stats.incorrect > 0) {
-      // Correct the stats: remove one incorrect, add one correct
-      useSessionStore.setState({
-        stats: {
-          correct: stats.correct + 1,
-          incorrect: stats.incorrect - 1,
-        },
-      });
-
-      webrtcManager.sendToolResult(callId, {
-        status: 'success',
-        message: 'Previous answer marked as correct',
-        updated_stats: useSessionStore.getState().stats,
-      });
-    } else {
+    if (!canFlip) {
       webrtcManager.sendToolResult(callId, {
         status: 'no_change',
-        message: 'No incorrect answer to override',
+        message: overrideTo === 'correct'
+          ? 'No incorrect answer to override'
+          : 'No correct answer to override',
+      });
+      return;
+    }
+
+    // Adjust stats by flipping one tally from one bucket to the other.
+    if (overrideTo === 'correct') {
+      useSessionStore.setState({
+        stats: { correct: stats.correct + 1, incorrect: stats.incorrect - 1 },
+      });
+    } else {
+      useSessionStore.setState({
+        stats: { correct: stats.correct - 1, incorrect: stats.incorrect + 1 },
       });
     }
+
+    // Re-write the last answered card to AnkiDroid with the flipped grade.
+    const { selectedDeck: deckForOverride } = useSettingsStore.getState();
+    if (this.lastAnsweredCardId != null && this.lastAnsweredCardOrd != null && deckForOverride) {
+      const pass = overrideTo === 'correct';
+      ankiBridge.answerCard(deckForOverride, this.lastAnsweredCardId, this.lastAnsweredCardOrd, pass).catch((err) => {
+        console.warn('[SessionManager] override write-back error:', err);
+      });
+    }
+
+    webrtcManager.sendToolResult(callId, {
+      status: 'success',
+      message: `Previous answer marked as ${overrideTo}`,
+      updated_stats: useSessionStore.getState().stats,
+    });
   }
 
   /**
@@ -592,6 +682,9 @@ class SessionManager {
     webrtcManager.onConnectionDropped = null;
     this.phaseBeforeNetworkPause = null;
     this.pendingCardAdvance = false;
+    this.lastAnsweredCardId = null;
+    this.lastAnsweredCardOrd = null;
+    stopAudioLevelTracking();
     transitionTo('session_complete', 'notification_end');
     await this.onSessionComplete();
   }
@@ -607,11 +700,14 @@ class SessionManager {
     webrtcManager.onConnectionDropped = null;
     this.phaseBeforeNetworkPause = null;
     this.pendingCardAdvance = false;
+    this.lastAnsweredCardId = null;
+    this.lastAnsweredCardOrd = null;
 
     stopForegroundService().catch((error) => {
       console.warn('[SessionManager] Failed to stop foreground service:', error);
     });
 
+    stopAudioLevelTracking();
     webrtcManager.disconnect();
     clearCards();
     transitionTo('idle', 'session_ended');

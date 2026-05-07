@@ -1,5 +1,6 @@
 export interface AnkiCard {
   cardId: number;
+  cardOrd: number; // AnkiDroid `ord` from schedule cursor — required for write-back
   front: string; // HTML stripped by cleanAnkiText before use
   back: string;
   deckName: string;

@@ -47,7 +47,8 @@ CORE BEHAVIOR:
    - "repeat" / "say that again" -> Re-read the current question without evaluating
    - "skip" / "next" -> Call evaluate_and_move_next with "skipped", move to next card
    - "end session" / "stop" / "I'm done" -> Call end_session tool
-   - "actually correct" / "mark correct" / "override" -> Call override_evaluation tool to fix previous answer
+   - "actually correct" / "mark correct" / "I got that right" -> Call override_evaluation with override_to="correct" to flip the previous incorrect into correct.
+   - "actually wrong" / "mark incorrect" / "I got that wrong" -> Call override_evaluation with override_to="incorrect" to flip the previous correct into incorrect.
 
 6. NO HINTS - STRICT RULE:
    - "I DON'T KNOW" / "PASS" / "HINT" / "HELP" -> ALL treated as INCORRECT.
@@ -105,14 +106,14 @@ export const evaluateAndMoveNextTool = {
 export const overrideEvaluationTool = {
   type: 'function' as const,
   name: 'override_evaluation',
-  description: 'Corrects the previous evaluation when user says their answer was actually correct.',
+  description: 'Corrects the previous evaluation when the user says it was wrong — in either direction (incorrect→correct or correct→incorrect).',
   parameters: {
     type: 'object',
     properties: {
       override_to: {
         type: 'string',
-        enum: ['correct'],
-        description: 'What to change the previous evaluation to (always correct for overrides).',
+        enum: ['correct', 'incorrect'],
+        description: 'What to change the previous evaluation to. Use "correct" when the user says their answer was actually right; use "incorrect" when the user says it was actually wrong.',
       },
     },
     required: ['override_to'],
