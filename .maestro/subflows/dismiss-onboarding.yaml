@@ -1,0 +1,33 @@
+# Skip onboarding if it's the first launch on this device. Idempotent —
+# safe to invoke even after onboarding has been completed (the visible
+# checks no-op silently).
+
+appId: com.realtimeapionmobile
+
+---
+- runFlow:
+    when:
+      visible: "Get Started"
+    commands:
+      - tapOn: "Get Started"
+
+- runFlow:
+    when:
+      visible: "Sign in with Google"
+    commands:
+      # Test mode bypasses sign-in. If the test build still shows this
+      # screen, APP_MODE=test isn't set or the auth-bypass branch in
+      # `(onboarding)/sign-in.tsx` isn't wired. Fail loudly instead of
+      # trying to drive Google Sign-In through the UI (it requires an
+      # active Google account on the device, defeats determinism).
+      - assertVisible:
+          text: "Skip in test mode"  # adjust to match the actual button
+      - tapOn: "Skip in test mode"
+
+- runFlow:
+    when:
+      visible: "Grant AnkiDroid access"
+    commands:
+      - tapOn: "Grant"
+      - waitForAnimationToEnd:
+          timeout: 5000

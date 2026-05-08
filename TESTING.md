@@ -1,26 +1,34 @@
 # Testing the Conversational Flashcards App
 
-A 4-layer strategy designed for an app where the "real" interaction is
-voice + LLM tool-calls. The core insight: **don't validate logic and
-audio in the same test**. Each layer tests one thing and is reproducible
-in isolation.
+A 6-layer strategy designed for an app where the "real" interaction is
+voice + LLM tool-calls + a native AnkiDroid bridge. The core insight:
+**don't validate logic and audio in the same test, and don't validate
+ContentProvider behavior in JS**. Each layer tests one thing and is
+reproducible in isolation.
 
 ```
-┌─────────────────────────────────────────────────────────────┐
-│  Layer 1   Unit tests        Jest, no audio, no API.        │
-│  Layer 2   Replay harness    Jest, mocked Gemini, mocked    │
-│                              AnkiDroid, deterministic.      │
-│  Layer 3   Real Gemini text  Real WebSocket, text input,    │
-│                              opt-in.                         │
-│  Layer 4a  Audio injection   Real Gemini, fake mic streams  │
-│                              pre-loaded PCM in-app.         │
-└─────────────────────────────────────────────────────────────┘
+┌──────────────────────────────────────────────────────────────────┐
+│  Layer 1   Unit tests           Jest, no audio, no API.          │
+│  Layer 2   Replay harness       Jest, mocked Gemini, mocked      │
+│                                 AnkiDroid, deterministic.        │
+│  Layer 3   Real Gemini text     Real WebSocket, text input,      │
+│                                 opt-in.                          │
+│  Layer 4a  Audio injection      Real Gemini, fake mic streams    │
+│                                 pre-loaded PCM in-app.           │
+│  Layer 5   Kotlin instrumented  Real AnkiDroid on emulator,      │
+│                                 ContentProvider exercised. The   │
+│                                 only layer that catches deck     │
+│                                 mixing + other bridge bugs.      │
+│  Layer 6   Maestro flows        Real Engram APK + real AnkiDroid │
+│                                 + scripted UI navigation. Full   │
+│                                 end-to-end including bridge.     │
+└──────────────────────────────────────────────────────────────────┘
 ```
 
 ## Quick start
 
 ```bash
-# All deterministic layers (free, fast):
+# All deterministic JS layers (free, fast):
 npm test
 
 # Single suite:
@@ -29,6 +37,15 @@ npx jest --testPathPatterns "replay"
 
 # Layer 3 (real API, costs cents per run):
 TEST_REAL_GEMINI=1 GEMINI_API_KEY=... npx jest realGemini.text
+
+# Layer 5 (real AnkiDroid on emulator, ~1 minute):
+npm run test:instrumented   # boots Pixel_9_Automatic if needed
+
+# Layer 6 (full UI flow on emulator, requires Engram APK installed):
+npm run test:maestro
+
+# Everything but Maestro (the cheapest 95% of coverage):
+npm run test:all
 ```
 
 Tests pass when there are no failures. Skipped suites are expected for
@@ -94,10 +111,34 @@ export const happyPath: Fixture = {
 };
 ```
 
-Three turn kinds:
-- `answer` — user replies, AI grades via `evaluate_and_move_next`.
+Five turn kinds:
+- `answer` — user replies, AI grades via `evaluate_and_move_next`. Emits
+  the production two-turn shape: silent tool-call turn (response.done with
+  no audio, intentionally skipped), then speaking turn (audio.delta then
+  response.done that triggers advance).
 - `override` — AI calls `override_evaluation`. Doesn't advance the card.
 - `endRequested` — AI calls `end_session`.
+- `silentGrade` — AI verbalises a verdict but NEVER fires
+  `evaluate_and_move_next`. Tests that no popup, no write, no advance, no
+  stat change happens — the contract that grading without a tool call is
+  a no-op. Catches the "tutor mentions correct/incorrect but no popup
+  shows" symptom at the JS layer.
+- `toolCallNoAudio` — AI calls the tool correctly but never speaks
+  afterward. Pins the current stuck-state behavior (phase stuck in
+  `evaluating`, card never advances despite a successful write). Future
+  recovery work will deliberately flip this assertion.
+
+**Per-turn diagnostics** captured in `RunResult.perTurn[i]`:
+
+- `ankiWritesAfter` — cumulative AnkiDroid writes after this turn.
+- `statsAfter` — `{ correct, incorrect }` from session store.
+- `phaseAfter` — session phase at end of turn (catches "UI stuck" bugs
+  where phase doesn't recover after a turn).
+- `lastEvaluationAfter` — drives the verdict popup. `null` means popup
+  stays cleared.
+- `cardIndexAfter` — `useSessionStore.currentCardIndex`, the value the
+  UI binds to. Catches "advanceCard never ran" regressions.
+- `toolResultAfter` — what the runner sent back to the (mock) AI.
 
 **Adding a fixture:** append to `scripts.ts`, then add a test case in
 `replay.test.ts`. The harness's "every turn matches its expectWriteback
@@ -227,13 +268,134 @@ the same way for fakeMicSource in test mode).
 ## Test coverage at a glance
 
 ```
-Layer 1  Unit tests                  ~50 tests
-Layer 2  Replay harness               9 tests
+Layer 1  Unit tests                  ~57 tests
+Layer 2  Replay harness              22 tests (incl. silentGrade,
+                                     toolCallNoAudio, phase invariants)
 Layer 3  Real Gemini text             gated (1 test)
 Layer 4a Audio injection harness      bootstrap + helpers
+Layer 5  Kotlin instrumented           5 tests (deck isolation, deck
+                                     name lookup, notes-URI bug doc)
+Layer 6  Maestro flows                 1 flow scaffold (deck isolation
+                                     at full-app level)
 ```
 
-Total deterministic: **97 tests** across 8 suites.
+Total deterministic JS: **115 tests** across 9 suites.
+Total instrumented: **5 tests** on emulator.
+
+## Bug classes the harness pins
+
+| Symptom | Catchment |
+|---|---|
+| AI verbalises a verdict, no popup / no advance / no write | Layer 2 `silentGrade` family |
+| AI tool-calls correctly, then UI stuck (no advance) | Layer 2 `toolCallNoAudio` characterization |
+| Phase desync between sessionManager and UI store | Layer 2 phase + advance invariants |
+| `lastEvaluation` popup state corrupted | Layer 2 invariant on `lastEvaluationAfter` |
+| Re-introduction of in-tool-handler `getDueCards` re-query (race) | Layer 1 sessionManager test "no re-query" guard |
+| **AnkiDroid ContentProvider quirks (cross-deck leak in `getDueCards`)** | **Layer 5 `GetDueCardsTest` — runs against real AnkiDroid** |
+| UI rendering `session.tsx` doesn't react to store changes | NOT covered — needs `@testing-library/react-native` |
+| Real AI prompt regressions / "AI verbalises but doesn't tool-call" | Partially covered (Layer 3, only 1 fixture today) |
+| Full UI → bridge → AnkiDroid integration (deck name passed correctly etc.) | Layer 6 Maestro flow (scaffold; needs Engram APK first) |
+
+---
+
+## Layer 5 — Kotlin instrumented tests
+
+**What:** JUnit tests that run on a connected Android emulator with a
+real AnkiDroid install. Exercise `AnkiDroidQueries` (the extracted
+`getDueCards`/`answerCard` core logic from `AnkiDroidModule.kt`) against
+the real `FlashCardsContract` ContentProvider. Catches bugs in our
+Kotlin code AND quirks of the AnkiDroid ContentProvider that no
+JS-layer test can see.
+
+**Files:**
+- `modules/anki-droid/android/src/main/.../AnkiDroidQueries.kt` —
+  the extracted production logic, called from both `AnkiDroidModule`'s
+  AsyncFunctions and the test.
+- `modules/anki-droid/android/src/androidTest/.../GetDueCardsTest.kt` —
+  the deck-isolation regression suite. Seeds two test decks via direct
+  `ContentResolver` inserts (no external library), asserts every
+  returned card belongs to the requested deck (by note ID, not by the
+  echoed `deckName` field).
+- `modules/anki-droid/android/src/androidTest/.../SmokeTest.kt` —
+  toolchain canary.
+- `modules/anki-droid/android/src/androidTest/AndroidManifest.xml` —
+  declares `com.ichi2.anki.permission.READ_WRITE_DATABASE`, which the
+  test runtime grants via `GrantPermissionRule`.
+- `scripts/test-instrumented.sh` — boots `Pixel_9_Automatic` headless
+  if no device is attached, waits for boot complete, runs Gradle.
+
+**Tests in `GetDueCardsTest`:**
+- `queryDueCards_returnsOnlyTheRequestedDeck` — assertion on note IDs,
+  not `deckName` (which is just the input echoed back).
+- `queryDueCards_querySymmetric_otherDeckAlsoIsolated` — same in reverse,
+  guards against a hardcoded "DeckA" check passing test #1 by accident.
+- `queryDeckId_resolvesNamedDecks` — sanity on deck name → id lookup.
+- `notesUri_doesNotFilterByDeck_documentsTheBugClassWeAvoid` — runs the
+  buggy notes URI directly to prove it still leaks. If AnkiDroid ever
+  fixes the notes URI filter, this test fails and we know we can drop
+  the cards-URI workaround.
+- `SmokeTest.targetContextIsAvailable` — toolchain.
+
+**Run:**
+
+```bash
+npm run test:instrumented
+```
+
+**Prereqs (one-time):**
+1. Android SDK with `emulator` + `adb` in `$ANDROID_HOME`.
+2. AVD named `Pixel_9_Automatic` (or set `ENGRAM_TEST_AVD=<name>`).
+3. AnkiDroid 2.24+ installed on the AVD:
+   ```bash
+   curl -L -o /tmp/ankidroid.apk \
+     https://github.com/ankidroid/Anki-Android/releases/download/v2.24.0/variant-abi-AnkiDroid-2.24.0-x86_64.apk
+   adb install /tmp/ankidroid.apk
+   ```
+4. AnkiDroid bootstrapped — open it once, dismiss the intro screens
+   (the default collection + "Basic" model are created on first run):
+   ```bash
+   adb shell pm grant com.ichi2.anki android.permission.POST_NOTIFICATIONS
+   adb shell appops set com.ichi2.anki MANAGE_EXTERNAL_STORAGE allow
+   adb shell monkey -p com.ichi2.anki -c android.intent.category.LAUNCHER 1
+   # Manually tap "Get Started" then "Continue" once.
+   ```
+
+**When to add a Layer 5 test:** any change to `AnkiDroidQueries.kt` —
+new ContentProvider URI usage, new column, write-back contract change.
+Whenever you touch the bridge code, write a Kotlin test before merging.
+
+---
+
+## Layer 6 — Maestro flows (scaffold)
+
+**What:** End-to-end tests driving the real Engram APK on the emulator
+through actual UI taps. Covers integration bugs Layer 5 can't see —
+e.g. UI passes the wrong deck name to the bridge, or `session.tsx`
+doesn't render the cards the bridge returned.
+
+**Files:**
+- `.maestro/session-deck-isolation.yaml` — the deck-isolation flow.
+- `.maestro/scripts/assert-deck-isolation.js` — `runScript` helper that
+  parses logcat and asserts on the bridge's actual call.
+- `.maestro/subflows/dismiss-onboarding.yaml` — idempotent first-launch
+  skip.
+
+**Run:**
+
+```bash
+npm run test:maestro
+```
+
+**Status:** SCAFFOLD. The flow is written and referenced from
+`package.json`, but it requires the Engram APK installed on the
+emulator with `APP_MODE=test` (so `installTestHarness()` swaps
+`fakeMicSource` in and the AI bypass kicks in). The selectors will
+need adjustment when first executed against a real build — UI text
+strings change, IDs may need to be added.
+
+**When to add a Layer 6 flow:** for bugs that span UI ↔ bridge, or for
+release smoke tests. Don't write Layer 6 for anything Layer 5 already
+covers — Maestro is slower and harder to debug.
 
 ---
 

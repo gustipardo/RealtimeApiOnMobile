@@ -8,6 +8,9 @@
     "ios": "expo run:ios",
     "web": "expo start --web",
     "test": "jest",
+    "test:instrumented": "bash scripts/test-instrumented.sh",
+    "test:maestro": "maestro test .maestro/session-deck-isolation.yaml",
+    "test:all": "npm test && npm run test:instrumented",
     "postinstall": "patch-package"
   },
   "dependencies": {

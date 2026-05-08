@@ -1,0 +1,74 @@
+# Maestro flow: full-app deck-isolation regression test.
+#
+# What this catches that the Kotlin instrumented test doesn't:
+#   - Deck selection from the Engram UI passing the right deck name to
+#     ankiBridge.getDueCards (bug class: UI passes "Default::AwsExamSA"
+#     where bridge expects "AwsExamSA", or vice versa).
+#   - cardLoader → useCardCacheStore wiring (bug class: bridge returns
+#     correct cards but cache loses them).
+#   - session.tsx rendering the right card per index.
+#
+# Cheaper coverage of the same bug at the bridge level lives in
+#   modules/anki-droid/android/src/androidTest/.../GetDueCardsTest.kt
+# (run via `npm run test:instrumented`). This flow is the integration
+# layer on top.
+#
+# Prereqs:
+#   1. Engram APK installed on the emulator (`npm run android` once)
+#   2. AnkiDroid 2.24+ installed and bootstrapped (see TESTING.md)
+#   3. AnkiDroid pre-seeded with two distinct decks. Seed via the helper:
+#        cd App && ./scripts/seed-anki-decks.sh
+#      (or run the instrumented tests once — they leave a few decks
+#      behind from teardown failures)
+#   4. APP_MODE=test set in app.config.js extras (or .env) so the
+#     installTestHarness() boot path runs and fakeMicSource takes over
+#
+# Run:
+#   maestro test .maestro/session-deck-isolation.yaml
+#
+# Status: SCAFFOLD. The selectors below match Engram's current UI as of
+# 2026-05-07 but haven't been validated against a running APK yet —
+# requires the prereqs above to exist before first execution. Adjust
+# `tapOn` text values to match your build.
+
+appId: com.realtimeapionmobile  # placeholder — replace with the real
+                                # applicationId from android/app/build.gradle
+                                # once the rename to "engram" lands
+
+---
+# Boot fresh.
+- launchApp:
+    clearState: false  # keep settings (selectedDeck, onboardingCompleted)
+    stopApp: true
+
+# Skip past onboarding if it's the first launch. Maestro's `runFlow`
+# helpers can be added in a separate file once the screens are pinned.
+- runFlow:
+    when:
+      visible: "Get Started"
+    file: subflows/dismiss-onboarding.yaml
+
+# Pick the test deck.
+- assertVisible: "TEST_DeckA_*"  # regex match against the seeded deck
+- tapOn:
+    text: "TEST_DeckA_.*"
+    index: 0
+
+- tapOn:
+    text: "Start Session"
+
+# Wait for cards to load. The bridge logs each load as
+#   [ankiBridge] getDueCards('TEST_DeckA_...') → N cards
+- waitForAnimationToEnd:
+    timeout: 8000
+
+# Read what the bridge actually returned via logcat.
+# `runScript` lets us run JS that shells out to adb.
+- runScript:
+    file: scripts/assert-deck-isolation.js
+    env:
+      EXPECTED_DECK_PREFIX: "TEST_DeckA"
+
+# If we got here without a runScript failure, the deck filter held.
+# Cleanup: end session.
+- tapOn: "End Session"
