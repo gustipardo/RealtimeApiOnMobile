@@ -4,7 +4,7 @@
 > This file is the non-hidden entry point to the project context.
 > The full context lives in `../.claude/context/` (hidden directory — read it
 > if your tool exposes it; read this file if it doesn't).
-> Last updated: 2026-06-25 (session 10).
+> Last updated: 2026-06-25 (session 11).
 
 ---
 
@@ -20,19 +20,23 @@ Author: Tobías (Gusti) Pardo — UTN Facultad Regional Delta.
 
 ---
 
-## Current state (2026-06-25)
+## Current state (2026-06-25, end of session 11)
 
 | Layer                            | Status                                                               |
 | -------------------------------- | -------------------------------------------------------------------- |
 | Design system                    | Complete (phases 01–05, `_design/`)                                  |
 | Landing (`Web/`)                 | Deployed, bilingual ES/EN                                            |
-| App core (voice session)         | Working on Pixel 9, 243/245 Jest tests passing                       |
+| App core (voice session)         | Working on Pixel 9, **426/432 Jest tests passing** (6 Layer-3 gated)  |
 | Auth (Firebase + Google Sign-In) | M0 dev-bypass shipped; M1 routing shipped; M2 paywall wiring pending |
 | Free-quota / trial               | End-to-end shipped (7d OR 10 sessions, server-authoritative)         |
 | Play Store                       | Not yet submitted; `App/PLAY-STORE.md` documents blockers            |
-| Testing infrastructure           | Full E2E scenario framework shipped this session                     |
+| Testing infrastructure           | L1 unit + L2 replay (51 tests, 4 personas) + L3 real-Gemini (gated) |
 
-**Git:** 8 commits ahead of `origin/main`, NOT YET PUSHED.
+**Git:** 16 commits ahead of `origin/main`, NOT YET PUSHED.
+
+**Detailed change log for this session:** `SESSION_LOG_2026-06-25.md` (in this
+directory). Read it before doing further work — the session was long (5
+iterations) and changed a lot of code paths + tests + debug tooling.
 
 ---
 
@@ -137,8 +141,14 @@ calling the Cloud Function.
 ## Testing
 
 ```bash
-npm test                        # 243/245 Jest (node env, no device needed)
+npm test                        # 426/432 Jest (node env, no device needed; 6 L3 gated)
 npx jest --testPathPattern="useTrialStore"  # single suite
+npx jest --testPathPatterns="replay"        # Layer 2: full mock-user pipeline
+npx tsc --noEmit                # TypeScript strict — must be clean
+
+# Layer 3 (real Gemini API, costs money per run):
+TEST_REAL_GEMINI=1 GEMINI_API_KEY=... npx jest --testPathPatterns="realGemini"
+# See "Layer 3 setup issue" note below before running.
 
 # Kotlin instrumented (AnkiDroid must be installed on device/emulator):
 ./gradlew :anki-droid:connectedAndroidTest
@@ -146,6 +156,29 @@ npx jest --testPathPattern="useTrialStore"  # single suite
 
 Jest does NOT use jest-expo. Environment is `node`. Manual mocks live in
 `__mocks__/` and are registered via `moduleNameMapper` in `jest.config.js`.
+
+### Test pyramid (4 layers, deterministic first)
+
+| Layer | Suite(s) | What it tests | Cost |
+|---|---|---|---|
+| 1 — unit | `src/services/__tests__/sessionManager.test.ts` + 5 others | Tool-call routing, write-back contract, override flip, retry | $0 |
+| 2 — replay | `src/test-harness/__tests__/replay.test.ts` (**51 tests, 4 personas**) | Full pipeline: user transcript → AI tool call → write-back → phase → foreground service | $0 |
+| 3 — real API | `src/test-harness/__tests__/realGemini.text.test.ts` (gated, **6 tests**) | Prompt regressions, tool arg shape, AI grading drift | ~$0.05/run |
+| 4 — on-device | `scripts/test-e2e-scenario.sh` (5 scenarios) | Real Android + real AnkiDroid + real Gemini | ~$0.20/run |
+
+The 4 personas covered in L2 are: AWS Solutions Architect (English), Anatomy
+med-student (English), Refold English learner (vocab), Spanish phrases learner
+(es-ES, exercises BUG 16's language directive).
+
+### Layer 3 setup issue — READ BEFORE RUNNING
+
+`realGemini.text.test.ts` defaults to the production model
+`gemini-2.5-flash-native-audio-preview-12-2025`, which only accepts AUDIO
+modality and times out on `setupComplete` when given `responseModalities: TEXT`.
+Workaround: set `GEMINI_L3_MODEL=gemini-live-2.5-flash-preview` (a text-capable
+Live API model). Verified to receive `setupComplete` but the network/API
+setup may need re-validation; if L3 starts failing again, check
+`src/test-harness/realGeminiTextRunner.ts:130-160`.
 
 ---
 
@@ -166,6 +199,9 @@ Pixel 9 when multiple devices attached; override with `ANDROID_SERIAL=`).
 | `setup-test-emulator.sh`              | Boot AVD, install AnkiDroid, import test deck      | `google_apis` AVD |
 | `test-e2e-scenario.sh <scenario>`     | Full isolated E2E with assertion                   | Any               |
 | `assert-session.sh --log <file>`      | Parse log, check correct/incorrect counts          | None (offline)    |
+| `session-trace.sh`                    | **NEW** Live logcat → colored phase tracer with Δs | Any (or stdin)    |
+| `phase-timeline.sh <logfile>`         | **NEW** Offline phase timeline from saved log      | None              |
+| `dump-decks.sh [--json]`              | **NEW** AnkiDroid deck list via uiautomator (no perms) | Any          |
 
 **Interactive debugging:** `scrcpy --turn-screen-on` mirrors + mouse-controls the
 device screen from your laptop.
@@ -194,10 +230,13 @@ Four isolated test decks (completely independent of developer's personal AnkiDro
 | `spanish-phrases` | Engram Test — Spanish Phrases | 7     | Conversation learner  |
 | `anatomy-med`     | Engram Test — Anatomy         | 6     | Med student           |
 
-Generated by `scripts/create-test-apkg.py`. Fixtures at
-`src/test-harness/fixtures/<profile>.apkg` + `<profile>.scenario.json`.
+Generated by `scripts/create-test-apkg.py`. Three artifact kinds per persona:
+- `src/test-harness/fixtures/<profile>.apkg` — installable deck (used by on-device tests)
+- `src/test-harness/fixtures/<profile>.scenario.json` — scenario definition (used by `create-test-apkg.py` to regenerate the .apkg)
+- `src/test-harness/fixtures/<profile>.ts` — typed `AnkiCard[]` array (used by L2 Jest tests)
 
-Five scenarios in `scripts/scenarios/`:
+Five on-device scenarios in `scripts/scenarios/` (only run if `setup-test-emulator.sh`
+succeeds — see "Android ≥14 file:// limitation" below):
 
 ```bash
 scripts/test-e2e-scenario.sh scripts/scenarios/aws-all-correct.sh
@@ -205,6 +244,55 @@ scripts/test-e2e-scenario.sh scripts/scenarios/aws-mixed.sh
 scripts/test-e2e-scenario.sh scripts/scenarios/refold-english-mixed.sh
 # etc.
 ```
+
+### Android ≥14 file:// limitation — READ BEFORE RUNNING ON-DEVICE E2E
+
+On Android 14+ with the `google_apis_playstore` system image (the only one
+installed on the dev machine as of 2026-06-25), `am start … -d file://…` strips
+the URI under scoped storage. AnkiDroid's `IntentHandler` logs
+`Intent: ... Data: none` + `File import failed`, the deck row never appears
+in Engram's deck-select, and STEP 7 times out after 45s. Verified with
+AnkiDroid 2.24.0 on Android 16 (`google_apis_playstore;android-36;x86_64`).
+
+**Workaround:** install the rootable image and use that AVD instead:
+
+```bash
+sdkmanager "system-images;android-34;google_apis;x86_64"
+avdmanager create avd -n Pixel_9_Test \
+  -k "system-images;android-34;google_apis;x86_64" \
+  --device "pixel_9"
+```
+
+Root is required because the production AnkiDroid `CardContentProvider.query`
+rejects shell queries even with `READ_WRITE_DATABASE` granted. Documented in
+`DEBUGGING.md §12`. A `content://`-based fix would need a FileProvider
+helper in the Engram app — TODO, not implemented.
+
+---
+
+## Known production bugs (status as of 2026-06-25)
+
+- **BUG 9** — intermittent: after a silent eval turn, recovery timer bounces
+  evaluating → awaiting_answer but the user's next utterance doesn't unstick.
+  No fix yet; need persistent log capture (see BUG 13 in SESSION-FLOW.md).
+- **BUG 10 variant B** — intermittent: tutor says "last card" because the
+  Promise.race 500ms cap leaves `fetchAndAppendNextCard` unresolved →
+  `peekNextCard()` returns undefined. Fix proposed: re-query `getDeckInfo()`
+  before transitioning to `session_complete`.
+- **BUG 13** — first SFX chime is silent (expo-audio isLoaded race). Partially
+  worked around; root fix requires porting SFX to native SoundPool.
+- **BUG 15** — Gemini WebSocket close 1011; resume-failure UX is terminal.
+  Session-resumption added in session 7 but the user-facing recovery flow
+  is still open.
+- **Reconnect-failure transition** — `attemptReconnectAndResume` async chain
+  doesn't always propagate to `error: reconnect_failed` in tests (the L2
+  runner drains the chain deterministically via microtasks + reconnect
+  succeeds; failure path was added but flaky). The runner pins the
+  *intermediate* state ("reconnecting" phase was entered, reconnectCount
+  incremented) rather than the final error phase.
+
+All five are tracked in `App/SESSION-FLOW.md §4`. None are blockers — the
+app works for the happy path.
 
 ---
 
