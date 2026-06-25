@@ -1,5 +1,5 @@
 import { realtimeManager as webrtcManager } from './realtimeManager';
-import { loadDueCards, getCurrentCard, getNextCard, getRemainingCardCount, getTotalCardCount, clearCards, peekNextCard, peekRemainingAfterAdvance, advanceCacheIndex } from './cardLoader';
+import { loadDueCards, getCurrentCard, getNextCard, getRemainingCardCount, getTotalCardCount, clearCards, peekNextCard, peekRemainingAfterAdvance, advanceCacheIndex, fetchAndAppendNextCard } from './cardLoader';
 import { useSessionStore } from '../stores/useSessionStore';
 import { useSettingsStore } from '../stores/useSettingsStore';
 import { useConnectionStore } from '../stores/useConnectionStore';
@@ -8,6 +8,11 @@ import { getSystemPrompt, allTools, getInitialMessage, getResumeMessage, formatT
 import { startForegroundService, stopForegroundService, updateForegroundNotification, requestAudioFocus, clearAudioFocusPauseFlag, isServiceRunning } from './foregroundAudioService';
 import { startAudioLevelTracking, stopAudioLevelTracking } from './audioLevelTracker';
 import { AnalyticsEvents } from './analytics';
+import { sessionLog } from './sessionDebugLogger';
+import { sfxPlayer } from './sfxPlayer';
+import { transcriptIndicatesNextCard } from './uiAdvanceMatcher';
+import { useCardCacheStore } from '../stores/useCardCacheStore';
+import { recordSession, type TrialStatus } from './trialService';
 
 /**
  * Session Manager - Orchestrates the study session
@@ -23,11 +28,26 @@ class SessionManager {
   private phaseBeforeNetworkPause: string | null = null;
 
   /**
-   * True when a card has been evaluated but the visual index hasn't
-   * advanced yet.  The advance happens on `response.done` so the
-   * displayed card stays in sync with the AI's speech.
+   * Recovery timer fired when the session has been stuck in `evaluating`
+   * for too long without any AI audio arriving. Catches BUG 3/4
+   * (Gemini emits ctrl tokens + turnComplete but no audio.delta, so the
+   * phase machine never reaches `giving_feedback` → never recovers to
+   * `awaiting_answer`). Without this, a single non-tool-calling turn
+   * locks the session forever.
    */
-  private pendingCardAdvance = false;
+  private evaluatingRecoveryTimer: ReturnType<typeof setTimeout> | null = null;
+  private static readonly EVALUATING_RECOVERY_TIMEOUT_MS = 8000;
+
+  /**
+   * Debounce timer for "user stopped speaking → evaluating". Gemini emits
+   * `inputTranscription.text` chunks incrementally during the user's
+   * utterance; the last chunk has no special marker. We treat 800ms of
+   * silence after the latest chunk as "user truly done" and transition to
+   * Evaluating, giving the UI immediate feedback while Gemini's inference
+   * runs (1–3s) before the tool call lands.
+   */
+  private userDoneSpeakingTimer: ReturnType<typeof setTimeout> | null = null;
+  private static readonly USER_DONE_DEBOUNCE_MS = 800;
 
   /**
    * AnkiDroid (note_id, card_ord) of the most recently evaluated card.
@@ -37,6 +57,45 @@ class SessionManager {
    */
   private lastAnsweredCardId: number | null = null;
   private lastAnsweredCardOrd: number | null = null;
+
+  /**
+   * BUG 12 — UI advance is gated on three triggers:
+   *   1. Gemini's outputTranscription transitions to the next card's question.
+   *   2. PENDING_UI_ADVANCE_TIMEOUT_MS elapses (force-advance — matches
+   *      EvaluationBanner duration so visuals stay in sync).
+   *   3. response.done — the AI's whole turn finished without us matching;
+   *      flush before next card grading.
+   * `pendingUiNextCardFront` holds the next card's front text used by the
+   * transcript matcher; `pendingUiTargetIndex` is the cache index the UI
+   * should land on when committed (captured at arm time so a subsequent
+   * eager advance for the *next* grading doesn't skip the previous card).
+   * Both null means no pending advance. The data-layer `currentIndex` in
+   * `useCardCacheStore` advances eagerly (BUG 4 liveness) — only the UI
+   * pointer lags.
+   */
+  private pendingUiNextCardFront: string | null = null;
+  private pendingUiTargetIndex: number | null = null;
+  /**
+   * Accumulated running transcript of the AI's current turn since the
+   * pending advance was armed. Gemini emits `outputTranscription` as
+   * per-chunk deltas (typically 1–3 words each), so matching a card front
+   * against any single delta is hopeless — we have to accumulate. Reset
+   * on arm + commit; appended on every transcript event. See SESSION-FLOW.md
+   * §4.BUG 14.
+   */
+  private pendingUiTranscriptAccum: string = '';
+  private pendingUiAdvanceTimer: ReturnType<typeof setTimeout> | null = null;
+  /**
+   * Timeout fallback for when the transcript matcher never crosses the
+   * threshold AND `response.done` never arrives. Under normal flow the
+   * commit fires from either the matcher (when the AI begins the next
+   * question) or `response.done` (turn ends) — both happen well within
+   * 30 s. This timeout exists only to prevent a wedged handler from
+   * pinning the UI on a stale card forever. Earlier values (3500 / 5500)
+   * fired during normal-length feedback turns and produced the BUG 14
+   * "flips while tutor is still talking" symptom.
+   */
+  private static readonly PENDING_UI_ADVANCE_TIMEOUT_MS = 30000;
 
   /**
    * Start a new study session
@@ -49,68 +108,148 @@ class SessionManager {
       throw new Error('No deck selected');
     }
 
+    sessionLog.banner(`Starting session — deck: "${selectedDeck}"`);
+
     // Reset session state
     resetSession();
 
+    // Warm the SFX players so the first chime of the session doesn't pay
+    // the audio-asset load cost. No-op on subsequent sessions.
+    sfxPlayer.preload();
+
     try {
-      // 1. Connect to WebRTC (if not already)
+      // ── STEP 1 ── Connect WebSocket to Gemini ─────────────────────────────
       const connectionState = useConnectionStore.getState().connectionState;
+      sessionLog.step(1, { deck: selectedDeck, prev_state: connectionState });
       if (connectionState !== 'connected') {
         transitionTo('connecting', 'startSession');
         await webrtcManager.connect();
+      } else {
+        sessionLog.info('SessionManager', 'WebSocket already connected — skipping connect()');
+      }
+      sessionLog.stepDone(1, { state: useConnectionStore.getState().connectionState });
+
+      // ── STEP 1b ── Trial quota check (server-authoritative) ──────────────
+      // The deck-select screen pre-checks trialStatus on focus, but there's
+      // a TOCTOU window: the user could tap a deck right as the trial
+      // expires. recordSession() atomically increments sessionCount AND
+      // returns the post-increment status — the server is the source of
+      // truth. If the trial was exhausted in the last few seconds, we
+      // catch it here before doing any expensive work (cards, AI prompt).
+      //
+      // recordSession() is a no-op in dev (payment bypassed) and
+      // best-effort on network errors (returns the unlocked shape), so a
+      // transient blip doesn't block the session — the next checkTrialStatus
+      // from deck-select will re-sync.
+      sessionLog.step('1b', { waiting_for: 'recordSession' });
+      const trialAfterStart: TrialStatus = await recordSession();
+      sessionLog.stepDone('1b', {
+        subscriptionActive: trialAfterStart.subscriptionActive,
+        daysRemaining: trialAfterStart.daysRemaining,
+        sessionsRemaining: trialAfterStart.sessionsRemaining,
+      });
+      if (!trialAfterStart.isActive && !trialAfterStart.subscriptionActive) {
+        // Server says trial expired between the deck-select pre-check and
+        // here. Bail out before we touch the audio stack or load cards.
+        sessionLog.warn('SessionManager', 'trial expired between deck-select and startSession');
+        // Disconnect what Step 1 just opened — the audio socket is open
+        // but we don't want to leave the user on a connect-then-paywall
+        // dead-end.
+        try {
+          webrtcManager.disconnect();
+        } catch (_) { /* best-effort */ }
+        transitionTo('error', 'trial_expired');
+        AnalyticsEvents.paywallShown('trial_expired_at_start');
+        const err: any = new Error('Trial expired');
+        err.code = 'trial_expired';
+        throw err;
       }
 
-      // 1b. Start RMS-based mic level tracking. Independent of mute —
-      //     we want the meter live even when sessionManager has muted
-      //     the send path so the user can see "is my mic delivering
-      //     audio at all?"
+      // ── STEP 2 ── Audio I/O + mic capture (muted) ─────────────────────────
+      sessionLog.step(2);
+      // Start RMS-based mic level tracking. Independent of mute —
+      // we want the meter live even when sessionManager has muted
+      // the send path so the user can see "is my mic delivering
+      // audio at all?"
       startAudioLevelTracking();
-
-      // 2. Mute microphone during setup to prevent default server_vad
-      //    from picking up audio before our session config is applied.
+      // Mute microphone during setup to prevent default server_vad
+      // from picking up audio before our session config is applied.
       webrtcManager.setMicrophoneMuted(true);
+      sessionLog.stepDone(2, { mic: 'muted', level_tracker: 'started' });
 
-      // 3. Load cards from AnkiDroid
+      // ── STEP 3 ── Load due cards from AnkiDroid ───────────────────────────
+      sessionLog.step(3, { deck: selectedDeck });
       transitionTo('loading_cards', 'startSession');
       const cards = await loadDueCards(selectedDeck);
 
       if (cards.length === 0) {
+        sessionLog.stepFail(3, 'no cards due for this deck');
         transitionTo('error', 'no_cards');
         throw new Error('No cards due for review in this deck');
       }
+      sessionLog.stepDone(3, {
+        cards_loaded: cards.length,
+        first_card_front: cards[0]?.front,
+      });
 
-      // 4. Configure AI session and wait for server acknowledgement
+      // Snapshot the deck's true due-card count for the session header AND
+      // the tutor's initial greeting. The card cache only holds the scheduler
+      // head + refills (BUG 5 v3b), so cards.length is a useless denominator
+      // here — see SESSION-FLOW.md §4.BUG 11. AnkiDroid's getDeckInfo gives
+      // us the honest "due today" count. Best-effort: if the call fails or
+      // the deck isn't found, fall back to cards.length so the UI still
+      // shows *something* and the session isn't blocked.
+      let dueAtStart = cards.length;
+      try {
+        const deckInfos = await ankiBridge.getDeckInfo();
+        const matched = deckInfos.find((d) => d.deckName === selectedDeck);
+        dueAtStart = matched?.dueCount ?? cards.length;
+        useSessionStore.getState().setTotalDueAtStart(dueAtStart);
+        sessionLog.info('SessionManager', 'totalDueAtStart snapshot', {
+          deck: selectedDeck,
+          due_today: dueAtStart,
+          cache_size: cards.length,
+        });
+      } catch (err) {
+        sessionLog.warn('SessionManager', 'getDeckInfo for due snapshot failed — falling back to cache size', {
+          error: String(err),
+        });
+        useSessionStore.getState().setTotalDueAtStart(cards.length);
+      }
+
+      // ── STEP 4 ── Configure AI session ────────────────────────────────────
+      // Pass the AnkiDroid due-count (dueAtStart), NOT cards.length: the
+      // system prompt's "You have N cards to review" line goes into the
+      // tutor's greeting, and cards.length is always 1 under the v3b cache.
+      // That's how BUG 10's "tutor says you have 1 card" symptom landed
+      // even though we'd already fixed remaining_cards in the tool result.
+      sessionLog.step(4, { cards: dueAtStart, vad: 'disabled (until first reply)' });
       transitionTo('ready', 'cards_loaded');
-      await this.configureAISession(selectedDeck, cards.length);
+      await this.configureAISession(selectedDeck, dueAtStart);
+      sessionLog.stepDone(4, { setup: 'acknowledged' });
 
-      // 5. Register event handlers
+      // Register event handlers + connection-loss machinery
       this.registerEventHandlers();
-
-      // 5b. Wire up connection drop handler for auto-reconnect
       this.installConnectionDropHandler();
-
-      // 5c. Subscribe to connection state changes for network-loss detection
       this.subscribeToConnectionState();
 
-      // 5d. Start foreground service NOW — before sendFirstCard. The phone-call-style
+      // Start foreground service NOW — before sendFirstCard. The phone-call-style
       // notification needs to be live the moment the user commits to a session, not
       // gated on the AI's first response completing. Previously this ran as the last
       // step (after sendFirstCard's waitForNextResponseDone): if the WebSocket
       // dropped during that wait, auto-reconnect kicked in and the service never
       // started — user saw a session running with no notification when minimized.
-      console.log('[SessionManager] starting foreground service (early)…');
       try {
         await startForegroundService(
           'Voice Study Session',
-          `Card 1 of ${cards.length}`
+          `Card 1 of ${dueAtStart}`
         );
-        console.log('[SessionManager] foreground service start resolved');
+        sessionLog.info('SessionManager', 'foreground service started');
       } catch (fgError) {
-        console.warn('[SessionManager] Failed to start foreground service:', fgError);
-        // Non-fatal: session works without it, just no background audio
+        sessionLog.warn('SessionManager', 'foreground service failed (non-fatal)', { error: String(fgError) });
       }
 
-      // 6. Send first card to AI, wait for first response, then enable VAD
+      // ── STEP 5+6 ── Send first card → wait for first response ─────────────
       const firstCard = getCurrentCard();
       if (firstCard) {
         await this.sendFirstCard(firstCard.front, firstCard.back);
@@ -119,13 +258,16 @@ class SessionManager {
         transitionTo('awaiting_answer', 'first_card_sent');
       }
 
-      // 7. Unmute microphone now that server_vad is enabled
+      // ── STEP 7 ── Unmute microphone (study loop active) ───────────────────
+      sessionLog.step(7);
       webrtcManager.setMicrophoneMuted(false);
+      sessionLog.stepDone(7, { mic: 'live', vad: 'server_vad@0.6' });
 
       // Track session start
       AnalyticsEvents.sessionStarted(selectedDeck, cards.length);
 
     } catch (error: any) {
+      sessionLog.error('SessionManager', 'startSession failed', { message: error?.message });
       AnalyticsEvents.sessionError(error?.message || 'start_failed');
       stopAudioLevelTracking();
       transitionTo('error', 'start_failed');
@@ -140,15 +282,21 @@ class SessionManager {
    * Waits for the server to acknowledge the update before resolving.
    */
   private async configureAISession(deckName: string, cardCount: number): Promise<void> {
-    const { alwaysReadBack, deckInstructions } = useSettingsStore.getState();
+    const { alwaysReadBack, deckInstructions, deckLanguages } = useSettingsStore.getState();
     const customInstructions = deckInstructions[deckName] || undefined;
-    const systemPrompt = getSystemPrompt(deckName, cardCount, alwaysReadBack, customInstructions);
+    // Per-deck language: drives both the system prompt's "Language: X ONLY"
+    // line and Gemini Live's speechConfig.languageCode (TTS voice + tighter
+    // recognition). Undefined → English fallback inside getSystemPrompt and
+    // server default for speechConfig.
+    const languageCode = deckLanguages[deckName] || undefined;
+    const systemPrompt = getSystemPrompt(deckName, cardCount, alwaysReadBack, customInstructions, languageCode);
 
     await webrtcManager.updateSession({
       instructions: systemPrompt,
       tools: allTools,
       modalities: ['text', 'audio'],
       turn_detection: null,  // Disabled until first AI response completes
+      languageCode,
     });
   }
 
@@ -158,18 +306,19 @@ class SessionManager {
    */
   private async sendFirstCard(front: string, back: string): Promise<void> {
     const message = getInitialMessage(front, back);
-    console.log('[SessionManager] sendFirstCard - front:', front);
-    console.log('[SessionManager] sendFirstCard - back:', back);
-    console.log('[SessionManager] sendFirstCard - full message:', message);
+
+    sessionLog.step(5, { front, back, message_len: message.length });
+    sessionLog.debug('SessionManager', 'initial message body', { message });
 
     // Send the card as a user message and request a response
     webrtcManager.sendTextMessage(message);
+    sessionLog.stepDone(5, { sent: 'clientContent[user] + turnComplete' });
 
     // Wait for the AI to finish its first response before enabling VAD.
     // This guarantees the AI has processed the card content in its context.
+    sessionLog.step(6, { waiting_for: 'response.done' });
     await webrtcManager.waitForNextResponseDone();
-
-    console.log('[SessionManager] First AI response complete, enabling server_vad');
+    sessionLog.stepDone(6, { result: 'AI first turn complete' });
 
     // Clear any buffered audio from the manual-mode phase before enabling VAD
     webrtcManager.sendEvent({ type: 'input_audio_buffer.clear' });
@@ -184,11 +333,12 @@ class SessionManager {
         silence_duration_ms: 500,
       },
     });
-
-    console.log('[SessionManager] server_vad enabled successfully');
+    sessionLog.info('SessionManager', 'server_vad enabled');
+    sessionLog.debug('SessionManager', 'audio track state — after vad enable');
     await webrtcManager.debugAudioTrackState('after-vad-enabled');
-    // Check again after 5s to see if bytes are increasing (audio actually flowing)
-    setTimeout(() => webrtcManager.debugAudioTrackState('5s-after-vad'), 5000);
+    if (sessionLog.isVerbose()) {
+      setTimeout(() => webrtcManager.debugAudioTrackState('5s-after-vad'), 5000);
+    }
   }
 
   /**
@@ -200,58 +350,109 @@ class SessionManager {
     // Handle tool calls
     webrtcManager.on('response.function_call_arguments.done', this.handleToolCall.bind(this));
 
-    // Handle AI speaking (giving feedback)
+    // Handle AI speaking (giving feedback). Audio.delta is the first real
+    // signal that the AI is *actually* speaking (not just emitting control
+    // tokens). It also cancels the evaluating-recovery timer.
     webrtcManager.on('response.audio.delta', () => {
       const phase = useSessionStore.getState().phase;
       if (phase === 'evaluating') {
+        this.clearEvaluatingRecovery();
         useSessionStore.getState().transitionTo('giving_feedback', 'ai_speaking');
       }
     });
 
-    // Handle AI finished speaking — advance card and transition to awaiting_answer.
+    // Handle AI finished speaking. The card index is advanced eagerly in
+    // `handleEvaluateAndMoveNext` (right after sendToolResult) so the UI
+    // can never end up stuck on a stale card — see SESSION-FLOW.md
+    // §4.BUG 4. This handler is responsible only for the phase transition.
     //
-    // Gemini Live emits turnComplete (= response.done) at the end of *every*
-    // model turn, including the turn that ends with a toolCall — i.e. before
-    // the client has even sent the tool response. If we acted on that first
-    // turnComplete, phase would flip to awaiting_answer prematurely; the
-    // response.audio.delta handler would then no-op (it only transitions
-    // out of 'evaluating'), and the second turnComplete (after the AI
-    // actually speaks the next card) would arrive in awaiting_answer and
-    // the visual card would never advance.
-    //
-    // Only acting on giving_feedback ensures we wait for a turn that
-    // actually contained AI audio (audio.delta is what flips the phase to
-    // giving_feedback). The toolCall-only turn is silent and stays in
-    // 'evaluating', so it is safely ignored.
+    // Three cases:
+    //   1. Tool-call turn (silent) → response.done in `evaluating`. Do
+    //      nothing — wait for the AI's feedback turn that follows.
+    //   2. Feedback turn (audio) → response.done in `giving_feedback`.
+    //      Transition back to `awaiting_answer`.
+    //   3. Recovery: turn ended in `evaluating` WITHOUT preceding audio
+    //      (Gemini emitted only control tokens, BUG 3 shape). The
+    //      recovery timer handles forcing us out — we don't act here.
     webrtcManager.on('response.done', () => {
+      // BUG 12 fallback: if a UI advance is still pending, the AI's whole
+      // turn finished without the transcript ever crossing the next-card
+      // threshold (and the 3.5 s timer hasn't fired yet — rare, only on
+      // very short feedback turns). Flush now so the next grading cycle
+      // doesn't start with stale UI.
+      this.commitPendingUiAdvance('response_done');
       const phase = useSessionStore.getState().phase;
       if (phase === 'giving_feedback') {
-        if (this.pendingCardAdvance) {
-          this.pendingCardAdvance = false;
-          useSessionStore.getState().advanceCard();
-          advanceCacheIndex();
-        }
         useSessionStore.getState().transitionTo('awaiting_answer', 'ai_done');
       }
     });
 
-    // Handle user speaking
+    // Handle user speaking (logging only — debounce cancel is below).
     webrtcManager.on('input_audio_buffer.speech_started', () => {
       const phase = useSessionStore.getState().phase;
       if (phase === 'awaiting_answer') {
-        console.log('[SessionManager] User started speaking');
+        sessionLog.event('mic', 'user speech started');
       }
     });
 
-    // Handle AI transcripts (for debugging)
+    // Handle AI transcripts. The event name is historical — these are
+    // incremental DELTAS streamed by Gemini's outputTranscription, NOT
+    // end-of-turn snapshots and NOT cumulative-so-far. Each delta is
+    // typically 1–3 words. We use them for two things:
+    //   1. Debug log of what the AI is saying (per-chunk — fine).
+    //   2. BUG 14 fix — accumulate the deltas into a running transcript
+    //      and match the running text against the next card's front. A
+    //      per-chunk match is impossible (1 word can't satisfy the
+    //      2-hit threshold) so this accumulation step is load-bearing.
     webrtcManager.on('response.audio_transcript.done', (event: any) => {
-      console.log('[AI]:', event.transcript);
+      const chunk = typeof event.transcript === 'string' ? event.transcript : '';
+      sessionLog.event('AI', 'transcript', { text: chunk });
+      if (!this.pendingUiNextCardFront) return;
+      this.pendingUiTranscriptAccum =
+        (this.pendingUiTranscriptAccum + ' ' + chunk).trim();
+      sessionLog.event('AI', 'transcript accum', {
+        accum_len: this.pendingUiTranscriptAccum.length,
+        accum: this.pendingUiTranscriptAccum,
+      });
+      if (
+        transcriptIndicatesNextCard(
+          this.pendingUiTranscriptAccum,
+          this.pendingUiNextCardFront,
+        )
+      ) {
+        sessionLog.event('UI', 'transcript_match firing', {
+          accum: this.pendingUiTranscriptAccum,
+          next_card_front: this.pendingUiNextCardFront,
+        });
+        this.commitPendingUiAdvance('transcript_match');
+      }
     });
 
-    // Handle user transcripts
+    // Handle user transcripts. Gemini streams `inputTranscription.text`
+    // chunks as the user speaks; the final chunk has no marker. Schedule
+    // a debounced transition to Evaluating — if no new chunk arrives
+    // within USER_DONE_DEBOUNCE_MS, we treat the user as done. This shows
+    // the Evaluating state during Gemini's inference window instead of
+    // waiting for the tool call (which can be 1–3s later).
     webrtcManager.on('conversation.item.input_audio_transcription.completed', (event: any) => {
-      console.log('[User]:', event.transcript);
-      useSessionStore.getState().transitionTo('evaluating', 'user_answered');
+      sessionLog.event('user', 'transcript', { text: event.transcript });
+      const phase = useSessionStore.getState().phase;
+      if (phase !== 'awaiting_answer') return;
+      if (this.userDoneSpeakingTimer) clearTimeout(this.userDoneSpeakingTimer);
+      this.userDoneSpeakingTimer = setTimeout(() => {
+        this.userDoneSpeakingTimer = null;
+        if (useSessionStore.getState().phase !== 'awaiting_answer') return;
+        useSessionStore.getState().transitionTo('evaluating', 'user_done_debounced');
+        this.startEvaluatingRecovery();
+      }, SessionManager.USER_DONE_DEBOUNCE_MS);
+    });
+
+    // Cancel debounce if user starts speaking again (new utterance begins).
+    webrtcManager.on('input_audio_buffer.speech_started', () => {
+      if (this.userDoneSpeakingTimer) {
+        clearTimeout(this.userDoneSpeakingTimer);
+        this.userDoneSpeakingTimer = null;
+      }
     });
 
     // Track tool call names
@@ -292,7 +493,7 @@ class SessionManager {
           'giving_feedback', 'advancing', 'ready',
         ];
         if (activePhases.includes(phase)) {
-          console.warn(`[SessionManager] Connection state -> ${connectionState}, muting mic`);
+          sessionLog.warn('SessionManager', 'connection state changed — muting mic', { to: connectionState });
           this.phaseBeforeNetworkPause = phase;
           webrtcManager.setMicrophoneMuted(true);
           // Don't transition to paused here — let onConnectionDropped
@@ -309,7 +510,7 @@ class SessionManager {
           // If phase is 'reconnecting', the resumeAfterReconnect flow
           // will handle restoration — don't interfere.
           if (phase === 'paused') {
-            console.log('[SessionManager] ICE self-recovered, resuming session');
+            sessionLog.info('SessionManager', 'ICE self-recovered — resuming session');
             webrtcManager.setMicrophoneMuted(false);
             transitionTo(this.phaseBeforeNetworkPause as any, 'connection_restored');
             this.phaseBeforeNetworkPause = null;
@@ -344,7 +545,7 @@ class SessionManager {
       ];
       if (!activePhases.includes(phase)) return;
 
-      console.log('[SessionManager] Connection dropped, starting reconnect flow');
+      sessionLog.warn('SessionManager', 'connection dropped — starting reconnect flow', { phase });
 
       // Save the phase so we can restore it later
       if (phase !== 'paused') {
@@ -376,11 +577,11 @@ class SessionManager {
           useConnectionStore.getState().reconnectAttempts
         );
       } catch (error) {
-        console.error('[SessionManager] Failed to resume session after reconnect:', error);
+        sessionLog.error('SessionManager', 'failed to resume session after reconnect', { message: (error as any)?.message });
         transitionTo('error', 'resume_failed');
       }
     } else {
-      console.error('[SessionManager] Reconnect failed, transitioning to error');
+      sessionLog.error('SessionManager', 'reconnect failed — transitioning to error');
       transitionTo('error', 'reconnect_failed');
     }
   }
@@ -400,7 +601,7 @@ class SessionManager {
       throw new Error('No deck selected for resume');
     }
 
-    console.log('[SessionManager] Resuming session after reconnect');
+    sessionLog.banner('Resuming session after reconnect');
 
     // 1. Re-configure AI session (system prompt + tools)
     const totalCards = getTotalCardCount();
@@ -419,7 +620,7 @@ class SessionManager {
           `Card ${completedSoFar + 1} of ${totalCards}`
         );
       } catch (fgError) {
-        console.warn('[SessionManager] Failed to start foreground service on resume:', fgError);
+        sessionLog.warn('SessionManager', 'failed to start foreground service on resume', { error: String(fgError) });
       }
     }
 
@@ -441,13 +642,13 @@ class SessionManager {
         stats
       );
 
-      console.log('[SessionManager] Sending resume message to AI');
+      sessionLog.info('SessionManager', 'sending resume message to AI', { remaining: remainingCards, stats });
       webrtcManager.sendTextMessage(resumeMsg);
 
       // Wait for AI to finish its resume response
       await webrtcManager.waitForNextResponseDone();
 
-      console.log('[SessionManager] AI resume response complete, enabling server_vad');
+      sessionLog.info('SessionManager', 'AI resume response complete — enabling server_vad');
 
       // Clear buffered audio and enable server_vad
       webrtcManager.sendEvent({ type: 'input_audio_buffer.clear' });
@@ -461,7 +662,7 @@ class SessionManager {
     transitionTo(restorePhase as any, 'reconnect_resumed');
     this.phaseBeforeNetworkPause = null;
 
-    console.log('[SessionManager] Session resumed after reconnect');
+    sessionLog.info('SessionManager', 'session resumed', { phase: restorePhase });
   }
 
   /**
@@ -485,10 +686,10 @@ class SessionManager {
           await this.handleEndSessionTool(call_id);
           break;
         default:
-          console.warn('[SessionManager] Unknown tool:', toolName);
+          sessionLog.warn('SessionManager', 'unknown tool', { name: toolName, call_id });
       }
-    } catch (error) {
-      console.error('[SessionManager] Tool call error:', error);
+    } catch (error: any) {
+      sessionLog.error('SessionManager', 'tool call handler threw', { message: error?.message });
     }
   }
 
@@ -497,7 +698,11 @@ class SessionManager {
    */
   private async handleEvaluateAndMoveNext(callId: string, args: any): Promise<void> {
     const { user_response_quality, feedback_text } = args;
-    console.log(`[SessionManager] Evaluation: ${user_response_quality} - ${feedback_text}`);
+    sessionLog.event('tool_call', 'evaluate_and_move_next', {
+      quality: user_response_quality,
+      feedback: feedback_text,
+      call_id: callId,
+    });
 
     const { transitionTo, recordAnswer } = useSessionStore.getState();
 
@@ -507,28 +712,32 @@ class SessionManager {
     const answeredCardId = currentCard?.cardId ?? null;
     const answeredCardOrd = currentCard?.cardOrd ?? null;
 
-    // Record answer + fire-and-forget write-back. CRITICAL: do NOT await.
+    // BUG 5 v3b: answerCard + refill-from-scheduler.
     //
-    // Background: when this was awaited, an AnkiDroid RuntimeException on
-    // a problematic card caused contentResolver.update() to hang for 3+
-    // seconds. During that window, Gemini Live's server emitted
-    // `toolCallCancellation` for our pending function call (it gives up
-    // when the client doesn't respond within ~1s). We then sent a stale
-    // tool result for an already-cancelled call, the AI got out of sync,
-    // and subsequent cards desynced. By detaching write-back from the
-    // tool-result path, the result reaches Gemini in milliseconds and
-    // Gemini never cancels. Write-back errors are logged; the in-app
-    // session continues regardless. AnkiDroid sync at session end is the
-    // safety net for any cards that fail to write back individually.
+    // Old design (fire-and-forget): kicked off answerCard async and read
+    // the next card from a pre-loaded cache. The cache came from a
+    // padded-up-front query whose ordering was wrong (slot[1] always the
+    // deck's oldest-added card — SESSION-FLOW.md BUG 5). Multiple attempts
+    // to coax `due`-ordered results from AnkiDroid's cards URI failed.
     //
-    // Also: we no longer re-query getDueCards inside this handler. The
-    // initial loadDueCards already populated the cache with all cards
-    // capped at the deck's dueCount, so the next-card peek below pulls
-    // from the existing cache. Re-querying inside a tool handler was
-    // racy (it added latency that caused the toolCallCancellation above)
-    // and brought no new information vs. the initial load.
+    // New design: await answerCard, then re-query the scheduler URI to
+    // get the next head card. Always-correct ordering with no dependency
+    // on `due` being exposed.
+    //
+    // Timeout: 500 ms cap on the answer + refill chain protects against
+    // the original concern (a slow AnkiDroid update would block past
+    // Gemini Live's ~1 s tool-call timeout and trigger
+    // toolCallCancellation). On timeout we still send the tool_result —
+    // the refill may return the same noteId (AnkiDroid hadn't reshuffled
+    // yet, user sees the same card briefly), but the session does not
+    // lock up.
     if (user_response_quality !== 'skipped') {
       recordAnswer(user_response_quality as 'correct' | 'incorrect');
+      // Fire the SFX in the same tick as recordAnswer — that's the action
+      // that flips `lastEvaluation`, which makes the on-screen banner
+      // appear. The chime lands with the banner and fills the silent gap
+      // before the tutor's spoken feedback starts (~1–2 s later).
+      sfxPlayer.play(user_response_quality as 'correct' | 'incorrect');
       transitionTo('evaluating', 'tool_called');
 
       const { selectedDeck: deckForAnswer } = useSettingsStore.getState();
@@ -536,9 +745,23 @@ class SessionManager {
         this.lastAnsweredCardId = answeredCardId;
         this.lastAnsweredCardOrd = answeredCardOrd;
         const pass = user_response_quality === 'correct';
-        ankiBridge.answerCard(deckForAnswer, answeredCardId, answeredCardOrd, pass).catch((err) => {
-          console.warn('[SessionManager] write-back error (non-fatal):', err);
+        sessionLog.event('AnkiDroid', 'write-back + refill', {
+          cardId: answeredCardId,
+          ord: answeredCardOrd,
+          pass,
         });
+        const ANSWER_REFILL_TIMEOUT_MS = 500;
+        await Promise.race([
+          (async () => {
+            try {
+              await ankiBridge.answerCard(deckForAnswer, answeredCardId, answeredCardOrd, pass);
+            } catch (err) {
+              sessionLog.warn('AnkiDroid', 'write-back error (non-fatal)', { error: String(err) });
+            }
+            await fetchAndAppendNextCard(deckForAnswer);
+          })(),
+          new Promise<void>((resolve) => setTimeout(resolve, ANSWER_REFILL_TIMEOUT_MS)),
+        ]);
       }
     }
 
@@ -547,8 +770,20 @@ class SessionManager {
     // Advance happens on response.done so card display stays in sync
     // with AI speech.
     const nextCard = peekNextCard();
-    const remainingCards = peekRemainingAfterAdvance();
     const stats = useSessionStore.getState().stats;
+    // Compute remaining from the AnkiDroid due-count snapshot taken at
+    // startSession, not from the in-memory cache. Under the BUG 5 v3b
+    // refill-from-scheduler architecture the cache only ever holds the
+    // current card + a 1-card lookahead, so `peekRemainingAfterAdvance()`
+    // always returned 1 (or 0) regardless of the deck's real due pile.
+    // The tutor read that and reliably concluded "this is the last card"
+    // every single turn (BUG 10). totalDueAtStart - answered is exact
+    // for a fresh-start session; if the user keeps studying past the
+    // initial snapshot (newly-due cards) the count clamps at 0 — still
+    // better than a hard "1" that contradicts a 200-card deck.
+    const { totalDueAtStart } = useSessionStore.getState();
+    const answered = stats.correct + stats.incorrect;
+    const remainingCards = Math.max(0, totalDueAtStart - answered);
 
     // Format result
     const result = formatToolResult(
@@ -559,13 +794,41 @@ class SessionManager {
     );
 
     // Send result back to AI
+    sessionLog.event('tool_result', 'evaluate_and_move_next → Gemini', {
+      answered_back: answeredCardBack,
+      next_card_front: nextCard?.front ?? null,
+      remaining: remainingCards,
+      stats,
+    });
     webrtcManager.sendToolResult(callId, result);
 
-    // Stay in 'evaluating' phase — the response.audio.delta handler will
-    // transition to 'giving_feedback', then response.done → 'awaiting_answer'.
+    // BUG 4 fix: advance the card index EAGERLY (right after the tool
+    // result is sent), not when the AI's feedback turn ends. The previous
+    // design waited for `response.done` in the `giving_feedback` phase to
+    // call advanceCard(). That only worked when Gemini produced real audio
+    // in the feedback turn. If the model emitted ctrl tokens + a silent
+    // turnComplete (BUG 3 shape), the audio.delta event never fired, the
+    // phase never reached `giving_feedback`, and the card never advanced.
+    // Reproducible E2E via `./scripts/test-flow.sh` on May 21 2026.
+    //
+    // Trade-off acknowledged: the visible card may switch to the next one
+    // a fraction of a second before the AI finishes speaking the feedback
+    // for the previous one. The user's ears track the AI; the screen is
+    // secondary. Freezing on the wrong card is worse than an early flip.
     if (nextCard) {
-      // Mark that card advance should happen when AI finishes speaking
-      this.pendingCardAdvance = true;
+      useSessionStore.getState().advanceCard();
+      advanceCacheIndex();
+      // BUG 12: data layer advances eagerly, UI doesn't. The UI's view of
+      // the visible card is committed by armPendingUiAdvance's timeout, by
+      // the transcript listener detecting the next-question start, or by
+      // response.done — whichever fires first. Target index is the
+      // current data-layer index right after advanceCacheIndex (i.e. where
+      // nextCard now lives). We capture it here so a later grading's
+      // eager advance can't make this UI commit overshoot. See
+      // SESSION-FLOW.md §4.BUG 12.
+      const targetIndex = useCardCacheStore.getState().currentIndex;
+      this.armPendingUiAdvance(nextCard.front, targetIndex);
+      this.startEvaluatingRecovery();
       const total = getTotalCardCount();
       const completed = stats.correct + stats.incorrect;
       updateForegroundNotification(
@@ -573,13 +836,86 @@ class SessionManager {
         `Card ${completed + 1} of ${total}`
       ).catch(() => {}); // Non-fatal
     } else {
-      // No more cards — advance immediately and end session
+      // No more cards — end session.
+      sessionLog.step(8, { reason: 'no_more_cards', stats });
       useSessionStore.getState().advanceCard();
       advanceCacheIndex();
-      this.pendingCardAdvance = false;
+      this.clearEvaluatingRecovery();
+      // Flush any still-pending UI advance from the previous card so the
+      // session_complete transition doesn't leave a half-applied lag.
+      this.commitPendingUiAdvance('session_complete');
       transitionTo('session_complete', 'no_more_cards');
       await this.onSessionComplete();
     }
+  }
+
+  /**
+   * Arm the recovery timer that forces the session out of `evaluating`
+   * if no AI audio arrives within EVALUATING_RECOVERY_TIMEOUT_MS.
+   * The timer is cancelled in `response.audio.delta` (real feedback) and
+   * by any phase change away from `evaluating` (override / endSession).
+   */
+  private startEvaluatingRecovery(): void {
+    this.clearEvaluatingRecovery();
+    this.evaluatingRecoveryTimer = setTimeout(() => {
+      const phase = useSessionStore.getState().phase;
+      if (phase !== 'evaluating') return;
+      sessionLog.warn('SessionManager',
+        'evaluating-recovery: no AI audio after tool result — forcing awaiting_answer',
+        { timeout_ms: SessionManager.EVALUATING_RECOVERY_TIMEOUT_MS });
+      useSessionStore.getState().transitionTo('awaiting_answer', 'evaluating_recovery');
+    }, SessionManager.EVALUATING_RECOVERY_TIMEOUT_MS);
+  }
+
+  private clearEvaluatingRecovery(): void {
+    if (this.evaluatingRecoveryTimer) {
+      clearTimeout(this.evaluatingRecoveryTimer);
+      this.evaluatingRecoveryTimer = null;
+    }
+  }
+
+  /**
+   * Arm a pending UI advance (BUG 12). Called right after the data layer
+   * advances the cache index. Snapshots the target index NOW so a later
+   * superseding evaluate-call (which moves currentIndex again before
+   * committing this pending advance) doesn't cause the UI to skip the
+   * previous card entirely. Sets up the timeout fallback; the transcript
+   * listener commits early if Gemini starts pronouncing the next question.
+   * Any previous pending advance is committed to ITS target first.
+   */
+  private armPendingUiAdvance(nextCardFront: string, targetIndex: number): void {
+    if (this.pendingUiNextCardFront !== null) {
+      this.commitPendingUiAdvance('superseded_by_new_advance');
+    }
+    this.pendingUiNextCardFront = nextCardFront;
+    this.pendingUiTargetIndex = targetIndex;
+    this.pendingUiTranscriptAccum = '';
+    this.pendingUiAdvanceTimer = setTimeout(() => {
+      this.commitPendingUiAdvance('timeout');
+    }, SessionManager.PENDING_UI_ADVANCE_TIMEOUT_MS);
+  }
+
+  /**
+   * Commit the pending UI advance if one is armed. Idempotent and safe to
+   * call from multiple triggers (transcript match, timeout, response.done,
+   * endSession). Sets `uiVisibleIndex` to the target captured at arm time —
+   * NOT the current data-layer `currentIndex`, which may have advanced
+   * past the target if another grading came in.
+   */
+  private commitPendingUiAdvance(reason: string): void {
+    if (this.pendingUiNextCardFront === null) return;
+    if (this.pendingUiAdvanceTimer) {
+      clearTimeout(this.pendingUiAdvanceTimer);
+      this.pendingUiAdvanceTimer = null;
+    }
+    const target = this.pendingUiTargetIndex;
+    this.pendingUiNextCardFront = null;
+    this.pendingUiTargetIndex = null;
+    this.pendingUiTranscriptAccum = '';
+    if (target !== null) {
+      useCardCacheStore.setState({ uiVisibleIndex: target });
+    }
+    sessionLog.event('UI', 'card advance committed', { reason, target_index: target });
   }
 
   /**
@@ -589,7 +925,7 @@ class SessionManager {
    */
   private async handleOverrideEvaluation(callId: string, args: any): Promise<void> {
     const overrideTo: 'correct' | 'incorrect' = args?.override_to === 'incorrect' ? 'incorrect' : 'correct';
-    console.log(`[SessionManager] Override evaluation → ${overrideTo}`);
+    sessionLog.event('tool_call', 'override_evaluation', { override_to: overrideTo, call_id: callId });
 
     const { stats } = useSessionStore.getState();
     const canFlip = overrideTo === 'correct' ? stats.incorrect > 0 : stats.correct > 0;
@@ -620,7 +956,7 @@ class SessionManager {
     if (this.lastAnsweredCardId != null && this.lastAnsweredCardOrd != null && deckForOverride) {
       const pass = overrideTo === 'correct';
       ankiBridge.answerCard(deckForOverride, this.lastAnsweredCardId, this.lastAnsweredCardOrd, pass).catch((err) => {
-        console.warn('[SessionManager] override write-back error:', err);
+        sessionLog.warn('AnkiDroid', 'override write-back error', { error: String(err) });
       });
     }
 
@@ -635,7 +971,8 @@ class SessionManager {
    * Handle end_session tool
    */
   private async handleEndSessionTool(callId: string): Promise<void> {
-    console.log('[SessionManager] End session requested by user');
+    sessionLog.event('tool_call', 'end_session', { call_id: callId });
+    sessionLog.step(8, { reason: 'user_ended' });
 
     const stats = useSessionStore.getState().stats;
     const total = stats.correct + stats.incorrect;
@@ -659,7 +996,7 @@ class SessionManager {
    */
   private async onSessionComplete(): Promise<void> {
     const stats = useSessionStore.getState().stats;
-    console.log('[SessionManager] Session complete:', stats);
+    sessionLog.stepDone(8, { stats });
     AnalyticsEvents.sessionCompleted({
       correct: stats.correct,
       incorrect: stats.incorrect,
@@ -670,15 +1007,15 @@ class SessionManager {
     try {
       await stopForegroundService();
     } catch (error) {
-      console.warn('[SessionManager] Failed to stop foreground service:', error);
+      sessionLog.warn('SessionManager', 'failed to stop foreground service', { error: String(error) });
     }
 
     // Trigger AnkiDroid sync
     try {
       await ankiBridge.triggerSync();
-      console.log('[SessionManager] Triggered AnkiDroid sync');
+      sessionLog.info('AnkiDroid', 'sync triggered');
     } catch (error) {
-      console.warn('[SessionManager] Failed to trigger sync:', error);
+      sessionLog.warn('AnkiDroid', 'failed to trigger sync', { error: String(error) });
     }
   }
 
@@ -688,10 +1025,16 @@ class SessionManager {
    */
   async endSessionFromNotification(): Promise<void> {
     const { transitionTo } = useSessionStore.getState();
+    // Same ordering as endSession() — flag + disconnect first so the
+    // tutor cuts off immediately even if onSessionComplete is async (BUG 6).
+    webrtcManager.stopCurrentAudio();
+    sfxPlayer.stop();
+    webrtcManager.disconnect();
     this.unsubscribeFromConnectionState();
     webrtcManager.onConnectionDropped = null;
     this.phaseBeforeNetworkPause = null;
-    this.pendingCardAdvance = false;
+    this.clearEvaluatingRecovery();
+    this.commitPendingUiAdvance('end_from_notification');
     this.lastAnsweredCardId = null;
     this.lastAnsweredCardOrd = null;
     stopAudioLevelTracking();
@@ -706,23 +1049,79 @@ class SessionManager {
   endSession(): void {
     const { transitionTo } = useSessionStore.getState();
 
+    // Order matters for the audio cut to be instant (BUG 6):
+    //   1. Set the playback-halted flag and flush the AudioTrack buffer.
+    //   2. Tear down the WebSocket + release the AudioTrack so no late
+    //      audio chunk can refill the hardware queue. Done BEFORE the rest
+    //      of the cleanup so the audio window is microseconds, not the
+    //      ~10 statements it took before.
+    webrtcManager.stopCurrentAudio();
+    sfxPlayer.stop();
+    webrtcManager.disconnect();
+
     this.unsubscribeFromConnectionState();
     webrtcManager.onConnectionDropped = null;
     this.phaseBeforeNetworkPause = null;
-    this.pendingCardAdvance = false;
+    this.clearEvaluatingRecovery();
+    this.commitPendingUiAdvance('end_session');
     this.lastAnsweredCardId = null;
     this.lastAnsweredCardOrd = null;
 
     stopForegroundService().catch((error) => {
-      console.warn('[SessionManager] Failed to stop foreground service:', error);
+      sessionLog.warn('SessionManager', 'failed to stop foreground service', { error: String(error) });
     });
 
     stopAudioLevelTracking();
-    webrtcManager.disconnect();
     clearCards();
     transitionTo('idle', 'session_ended');
 
-    console.log('[SessionManager] Session ended');
+    sessionLog.banner('Session ended (user)');
+  }
+
+  /**
+   * Dev/debug: inject a fake user answer as if the user had spoken it.
+   * Bypasses the mic entirely — sends a user-role clientContent text turn
+   * directly to Gemini. The AI then runs its normal evaluate_and_move_next
+   * cycle (tool call → write-back → advance), so the whole eval pipeline
+   * downstream is exercised end-to-end.
+   *
+   * Logged with [SIM] prefix so the trace is honest about the source.
+   * Only valid while the session is in an answering phase; rejected
+   * otherwise to avoid corrupting the conversation state.
+   */
+  simulateUserAnswer(text: string): void {
+    const trimmed = (text ?? '').trim();
+    if (!trimmed) {
+      sessionLog.warn('SIM', 'simulateUserAnswer called with empty text — ignored');
+      return;
+    }
+
+    const { phase, transitionTo } = useSessionStore.getState();
+    const acceptablePhases = ['awaiting_answer', 'giving_feedback', 'ready'];
+    if (!acceptablePhases.includes(phase)) {
+      sessionLog.warn('SIM', 'rejected — session not in an answering phase', {
+        current_phase: phase,
+        text: trimmed,
+      });
+      return;
+    }
+
+    sessionLog.event('SIM', 'injecting user answer', { text: trimmed, phase });
+
+    // Mute mic during injection so VAD can't race the text turn and
+    // double-commit. Restore previous mute state on next tick.
+    webrtcManager.setMicrophoneMuted(true);
+    transitionTo('evaluating', 'sim_user_answered');
+    // Arm recovery so a silent-no-tool reply (BUG 3 shape) can't lock the
+    // session in `evaluating`. The audio.delta handler clears it on real
+    // feedback; the timer forces awaiting_answer if 8 s pass silent.
+    this.startEvaluatingRecovery();
+
+    webrtcManager.sendTextMessage(trimmed);
+    // Mic stays muted after inject. server_vad on a no-input device fires
+    // immediately on unmute, racing the text turn → ctrl tokens instead of
+    // evaluate_and_move_next (BUG 3). Real users speak naturally; this path
+    // is dev/sim only. resume() unmutes explicitly when needed.
   }
 
   /**
@@ -730,6 +1129,7 @@ class SessionManager {
    */
   pause(): void {
     const { transitionTo } = useSessionStore.getState();
+    webrtcManager.stopCurrentAudio(); // stop tutor speaking immediately
     webrtcManager.setMicrophoneMuted(true);
     transitionTo('paused', 'user_paused');
   }
@@ -743,7 +1143,7 @@ class SessionManager {
     clearAudioFocusPauseFlag();
     // Re-request audio focus in case it was lost (e.g., after a phone call)
     requestAudioFocus().catch((err) => {
-      console.warn('[SessionManager] Failed to re-request audio focus:', err);
+      sessionLog.warn('SessionManager', 'failed to re-request audio focus', { error: String(err) });
     });
     transitionTo('asking_question', 'user_resumed');
   }

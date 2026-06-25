@@ -72,6 +72,7 @@ jest.mock('../realtimeManager', () => ({
     getAudioStats: (...a: any[]) => mockGetAudioStats(...a),
     debugAudioTrackState: (...a: any[]) => mockDebugAudioTrackState(...a),
     onConnectionDropped: null as null | (() => void),
+    stopCurrentAudio: jest.fn(),
   },
 }));
 
@@ -124,8 +125,38 @@ jest.mock('../analytics', () => ({
     sessionCompleted: jest.fn(),
     sessionError: jest.fn(),
     sessionReconnected: jest.fn(),
+    // New: sessionManager fires this on the trial-expired-mid-start path.
+    paywallShown: jest.fn(),
   },
 }));
+
+jest.mock('../sfxPlayer', () => ({
+  sfxPlayer: {
+    play: jest.fn(),
+    stop: jest.fn(),
+    preload: jest.fn(),
+    release: jest.fn(),
+  },
+}));
+
+jest.mock('../trialService', () => ({
+  // Default: trial is active with quota remaining. Individual tests can
+  // override via mockRecordSession.mockResolvedValueOnce(...) to exercise
+  // the "trial expired mid-deck-select" branch.
+  recordSession: jest.fn().mockResolvedValue({
+    isActive: true,
+    daysRemaining: 7,
+    sessionsRemaining: 9,
+    subscriptionActive: false,
+  }),
+  checkTrialStatus: jest.fn().mockResolvedValue({
+    isActive: true,
+    daysRemaining: 7,
+    sessionsRemaining: 9,
+    subscriptionActive: false,
+  }),
+}));
+const mockRecordSession = require('../trialService').recordSession as jest.Mock;
 
 jest.mock('../../config/prompts', () => ({
   getSystemPrompt: jest.fn().mockReturnValue('SYS'),
@@ -161,7 +192,7 @@ beforeEach(() => {
     darkMode: true,
     deckInstructions: {},
   });
-  (sessionManager as any).pendingCardAdvance = false;
+  (sessionManager as any).clearEvaluatingRecovery?.();
   (sessionManager as any).lastAnsweredCardId = null;
   (sessionManager as any).lastAnsweredCardOrd = null;
   (sessionManager as any).toolCallNames = new Map();
@@ -232,5 +263,128 @@ describe('sessionManager.startSession() — cache contents after start', () => {
     await sessionManager.startSession();
 
     expect(mockNativeGetDueCards).toHaveBeenCalledWith('A Different Deck');
+  });
+});
+
+describe('sessionManager.startSession() — totalDueAtStart snapshot (BUG 11)', () => {
+  it("snapshots the deck's true dueCount from getDeckInfo, not the cache size", async () => {
+    // Under BUG 5 v3b the cache starts with 1 card, but the real deck has
+    // many more due. The session header denominator must reflect the deck,
+    // not the cache.
+    mockNativeGetDueCards.mockResolvedValueOnce([makeNativeCard(401)]);
+    mockNativeGetDeckInfo.mockResolvedValueOnce([
+      { deckName: DECK, dueCount: 234, newCount: 50, learnCount: 0, reviewCount: 184 },
+    ]);
+
+    await sessionManager.startSession();
+
+    expect(useSessionStore.getState().totalDueAtStart).toBe(234);
+  });
+
+  it('falls back to cache size when the deck is not present in getDeckInfo', async () => {
+    // Defensive: a renamed deck or a stale-cached deck list shouldn't
+    // wedge the session. We log a warning and degrade to the old behavior.
+    mockNativeGetDueCards.mockResolvedValueOnce([makeNativeCard(501)]);
+    mockNativeGetDeckInfo.mockResolvedValueOnce([
+      { deckName: 'Some Other Deck', dueCount: 99, newCount: 0, learnCount: 0, reviewCount: 99 },
+    ]);
+
+    await sessionManager.startSession();
+
+    expect(useSessionStore.getState().totalDueAtStart).toBe(1);
+  });
+
+  it('falls back to cache size when getDeckInfo throws', async () => {
+    mockNativeGetDueCards.mockResolvedValueOnce([makeNativeCard(601)]);
+    mockNativeGetDeckInfo.mockRejectedValueOnce(new Error('ContentProvider unavailable'));
+
+    await sessionManager.startSession();
+
+    expect(useSessionStore.getState().totalDueAtStart).toBe(1);
+  });
+});
+
+describe('sessionManager.startSession() — trial quota (Step 1b)', () => {
+  // Step 1b is the server-authoritative trial check that runs after the
+  // WebSocket connects but before any expensive work (audio init, card
+  // load, AI prompt). The deck-select pre-check is a UI hint; this is
+  // the real gate. See FREE-QUOTA.md for the design.
+
+  it('calls recordSession after connect (active trial → session proceeds)', async () => {
+    // Default mock in the suite header returns isActive=true — this test
+    // just pins the call ordering: recordSession runs after connect and
+    // before the card load.
+    mockNativeGetDueCards.mockResolvedValueOnce([makeNativeCard(701)]);
+
+    await sessionManager.startSession();
+
+    expect(mockRecordSession).toHaveBeenCalledTimes(1);
+    // The audio stack was initialized — proves the trial check did NOT
+    // short-circuit the session.
+    expect(mockSetMicrophoneMuted).toHaveBeenCalled();
+    expect(useSessionStore.getState().phase).toBe('awaiting_answer');
+  });
+
+  it('aborts the session when recordSession reports trial exhausted (TOCTOU window)', async () => {
+    // Server says the trial just expired between deck-select's pre-check
+    // and this start. We must NOT start a session the user has no quota
+    // for, even if the pre-check passed.
+    mockNativeGetDueCards.mockResolvedValueOnce([makeNativeCard(702)]);
+    mockRecordSession.mockResolvedValueOnce({
+      isActive: false,
+      daysRemaining: 0,
+      sessionsRemaining: 0,
+      subscriptionActive: false,
+    });
+
+    await expect(sessionManager.startSession()).rejects.toMatchObject({
+      code: 'trial_expired',
+    });
+
+    // We opened the socket for Step 1, so it has to come back down.
+    expect(mockDisconnect).toHaveBeenCalled();
+    // We did NOT proceed to set up the audio stack or load cards.
+    expect(mockSetMicrophoneMuted).not.toHaveBeenCalled();
+    expect(mockNativeGetDueCards).not.toHaveBeenCalled();
+    // The phase machine lands on error so the UI can show the right copy.
+    expect(useSessionStore.getState().phase).toBe('error');
+  });
+
+  it('proceeds when subscription is active even if the trial would be exhausted', async () => {
+    // recordSession is a no-op server-side when subscriptionStatus='active'
+    // and returns isActive=true. The client doesn't need to branch — the
+    // shape is identical and the post-check just passes.
+    mockNativeGetDueCards.mockResolvedValueOnce([makeNativeCard(703)]);
+    mockRecordSession.mockResolvedValueOnce({
+      isActive: true,
+      daysRemaining: 0,
+      sessionsRemaining: 0,
+      subscriptionActive: true,
+    });
+
+    await sessionManager.startSession();
+
+    expect(mockRecordSession).toHaveBeenCalledTimes(1);
+    expect(useSessionStore.getState().phase).toBe('awaiting_answer');
+  });
+
+  it('proceeds when recordSession returns the dev-bypass unlocked shape', async () => {
+    // The "network blip" path is owned by trialService (it catches and
+    // returns the unlocked shape). This test pins the contract from
+    // sessionManager's side: whatever shape trialService returns, as
+    // long as isActive=true the session proceeds. (Real dev runs go
+    // through this exact path because the bypass returns the same shape.)
+    mockNativeGetDueCards.mockResolvedValueOnce([makeNativeCard(704)]);
+    mockRecordSession.mockResolvedValueOnce({
+      isActive: true,
+      daysRemaining: 99,
+      sessionsRemaining: 99,
+      subscriptionActive: true,
+    });
+
+    await sessionManager.startSession();
+
+    expect(mockRecordSession).toHaveBeenCalledTimes(1);
+    expect(useSessionStore.getState().phase).toBe('awaiting_answer');
   });
 });
