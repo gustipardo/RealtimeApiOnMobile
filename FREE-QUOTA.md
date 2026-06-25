@@ -1,8 +1,10 @@
 # Free quota / trial — design & implementation plan
 
-> Status (2026-06-24): **designed, not yet built.** Auth backend = Firebase Auth +
-> Google Sign-In (decided). This doc is the handoff for implementing the trial so a
-> newly-logged-in user can try the app before purchase is required.
+> Status (2026-06-24): **implemented and tested.** Auth backend = Firebase Auth +
+> Google Sign-In. This doc is the contract for the trial: a newly-logged-in user
+> gets **7 days OR 10 sessions** (whichever runs out first) before the paywall.
+> Implementation shipped in two commits (see "Shipped" below); the M2 paywall
+> gating work (block "start session" when `!isActive`) is the next step.
 
 ## Goal
 
@@ -82,10 +84,28 @@ is **not actually functional**:
 5. **Paywall gating in `deck-select`:** block "start session" when `!isActive`, route to
    `paywall.tsx`. (This is auth/payment **M2** — see `06-status.md` Session 7.)
 
+## Shipped (2026-06-24, session 8)
+
+Items 1–4 above are implemented and committed. See `.claude/context/06-status.md`
+Session 8 for the full change list.
+
+| Layer       | Where                                    | Behavior                                                                                            |
+| ----------- | ---------------------------------------- | --------------------------------------------------------------------------------------------------- |
+| Functions   | `functions/src/index.ts`                 | `computeTrialStatus` helper; `checkTrialStatus` create-on-read; `recordSession` new callable; `verifyPurchase` set-merge. |
+| Rules       | `firestore.rules`                        | Default-deny; `users/{uid}` self-read; all client writes denied (admins bypass).                    |
+| Deploy      | `firebase.json`                          | Picks up the rules + functions.                                                                     |
+| Client      | `src/services/trialService.ts`           | `recordSession()` callable wrapper, bypass-aware, best-effort on network errors.                   |
+| Wiring      | `src/services/sessionManager.ts` Step 1b | `recordSession()` called after `connect()` succeeds. Aborts with `code: 'trial_expired'` on the TOCTOU window if the server reports expired. Disconnects, fires `paywallShown` analytics, transitions to `error`. |
+| Tests       | `src/services/__tests__/trialService.test.ts` (new) + 4 new in `sessionManager.start.test.ts` | 12 new jest tests covering dev bypass, prod call, best-effort, and the Step 1b branch (active proceeds, expired aborts, subscribed proceeds, dev-bypass shape proceeds). |
+| Test infra  | `__mocks__/expo-constants.js`, `__mocks__/react-native-firebase-functions.js`, `jest.setup.js` | Global stubs for ESM packages that babel-jest can't parse in node env; `__DEV__` defined. |
+
+Net jest: **230/230 passing** (was 220 — +10 new + 2 from prior session work that
+landed in the same diff).
+
 ## Dev bypass (already done — M0)
 
 In a dev binary with payment bypassed (default), `trialService.checkTrialStatus()` returns
-a fully-unlocked status and `recordSession()` should no-op — no Firestore, no quota. Set
+a fully-unlocked status and `recordSession()` no-ops — no Firestore, no quota. Set
 `PAYMENT_REQUIRED=true` to exercise the real trial flow. See `src/config/env.ts`.
 
 ## Tests to add

@@ -61,6 +61,11 @@ The app currently uses Beta endpoints. Update to GA:
 - [x] On app open (prod mode), call cloud function to check trial status
 - [x] If trial active: show remaining days/sessions in deck-select header banner
 - [x] If trial expired and no subscription: redirect to paywall, block session start
+- [x] **Trial clock actually starts (2026-06-24 session 8).** `checkTrialStatus` is now create-on-read — the user doc is created with `trialStart=now` on first status check, so the 7-day clock ticks from first use.
+- [x] **Session quota actually enforced (2026-06-24 session 8).** New `recordSession` Cloud Function is called by `sessionManager.startSession` Step 1b (after the WebSocket connect, before any expensive work). Atomic `FieldValue.increment(1)` on `sessionCount`; subscribed users no-op server-side. Best-effort on the client (a network blip never blocks the session; the next `checkTrialStatus` re-syncs).
+- [x] **`verifyPurchase` works on a brand-new user (2026-06-24 session 8).** Switched `.update()` → `.set(..., { merge: true })` so the first purchase doesn't throw on a missing doc.
+- [x] **`firestore.rules` ships (2026-06-24 session 8).** Default-deny; `users/{uid}` self-read; all client writes denied. Cloud Functions use the admin SDK and bypass. Pre-launch blocker #3 closed.
+- [x] **TOCTOU window closed (2026-06-24 session 8).** If the trial expires between deck-select's pre-check and the session start, the server-authoritative `recordSession` return value aborts the session cleanly (disconnect + `code: 'trial_expired'` error). Pinned by 4 new jest tests.
 
 ### 6. Google Play Billing (subscription)
 - [x] Integrate `react-native-iap` (`billingService.ts`)
@@ -109,6 +114,51 @@ The app currently uses Beta endpoints. Update to GA:
 
 ---
 
+## Recently shipped (2026-05-21 — write-back tests + Gradle fix)
+
+### Gradle build fix
+- [x] **Root cause found and fixed:** `android/build/generated/autolinking/autolinking.json` cached stale library paths from before the project was moved from `Projects/` to `Projects/Dev/`. RN's autolinking caches that file keyed on lockfile SHA — the recent `package-lock.json` metadata-only change didn't invalidate it. Fix: `rm -rf android/build/generated/autolinking/`. One-time; next builds re-cache with correct paths. **BUILD SUCCESSFUL** 3m 19s, 626 tasks.
+- [x] Added gotcha to `DEBUGGING.md §10` explaining the stale cache symptom and fix.
+
+### Write-back test coverage (Jest, layer 2)
+- [x] `src/services/__tests__/ankiBridge.writeback.test.ts` — 15 tests for the JS bridge retry wrapper: ease mapping (pass→4, fail→1), first-success no-retry, 0-rows-triggers-retry, throw-triggers-retry, both-fail returns false (never throws), timeTakenMs=0 default, arg forwarding on retry. Uses `jest.useFakeTimers` + `resetAllMocks`/`clearAllTimers` to prevent mock queue bleed across tests.
+- [x] `src/services/__tests__/sessionManager.writeback.test.ts` — 9 tests for edge cases not covered in `sessionManager.test.ts`: override with no prior evaluated card (null lastAnsweredCardId), `endSession` clears lastAnsweredCardId/Ord (stale-override regression guard), fire-and-forget ordering (sendToolResult before answerCard resolves), write-back uses card identity at eval time not after advance, override writes to same (noteId, ord) as prior evaluate.
+- [x] **All jest suites green: 139/139 passing**, 2 skipped (TEST_REAL_GEMINI gated).
+
+### Write-back verification tool (device level)
+- [x] `scripts/check-writeback.sh` — fires one answer, captures both markers: Kotlin `AnkiDroidModule:D answerCard: result ... -> N row(s) updated` + JS `[ankiBridge] answerCard(...) → ok`. Exit 0 = PASS (rows>0), 1 = FAIL (0 rows), 2 = timeout, 4 = partial. Documents failure causes (stale queue, deck mismatch, stale ord).
+- [x] **Write-back confirmed working** from `_debug/runs/20260521-144314.log`: 4/4 cards `→ ok` in the last logged session.
+
+### Known unfixed (carried from 2026-05-06 session)
+- [ ] `answerCard` Kotlin row-count verification missing from prior runs (logcat filter only captured `ReactNativeJS`; `check-writeback.sh` now also captures `AnkiDroidModule:D`).
+- [ ] P3 instrumented test `submitCardAnswer_writesToCorrectCard` still pending (see P3 below).
+
+---
+
+## Recently shipped (2026-05-21 — session debug pipeline + BUG 4 fix)
+
+### Maintenance
+- [x] Stripped overbroad Android permissions from `app.json`: removed `android.permission.CAMERA` (unused; nothing in `src/` or `modules/` references it) and `android.permission.SYSTEM_ALERT_WINDOW` (no overlay features). Kept `BLUETOOTH` (legitimately used by `modules/expo-foreground-audio/.../AudioFocusManager.kt` for headphone routing). Brings the install-time permission dialog closer to "voice + audio + IAP" only.
+
+
+### Debug & test infrastructure
+- [x] `src/services/sessionDebugLogger.ts` — structured step logger mapping the canonical 8 SESSION-FLOW.md steps. Timestamps, phase machine, scoped events, verbose mode gated by `EXPO_PUBLIC_SESSION_DEBUG_VERBOSE`.
+- [x] `sessionManager.ts`, `geminiManager.ts`, `cardLoader.ts`, `useSessionStore.ts` all routed through `sessionLog.*`; ad-hoc `console.log` noise (per-message dumps, audio chunk counters, setup payload) gated behind verbose.
+- [x] Autostart sessions without manual tap: `AUTO_START_DECK="Aws Exam SA"` in `.env` → `(main)/deck-select.tsx` calls `handleSelectDeck` on mount when env matches.
+- [x] `scripts/snap.sh` — adb screencap to `_debug/snaps/<ts>-<label>.png`. Used for visual cross-reference of log vs UI state.
+- [x] `scripts/answer.sh "..."` — fires deep link `engram://simulate?answer=...` → handled by new `app/simulate.tsx` route → `sessionManager.simulateUserAnswer(text)`. Injects a fake user-spoken answer without a microphone; the eval pipeline downstream runs for real.
+- [x] `scripts/test-flow.sh` — multi-card pipeline. Autostart → wait STEP 7 → loop (snap pre / answer.sh / wait tool_result+ai_done / snap post) → end_session → summary. Exit 0 = all OK, exit 2 = at least one TIMEOUT/PARTIAL.
+- [x] Doc: `App/DEBUGGING.md` (10 sections — recipe, logger API, canonical flow, bug cheatsheet, autostart, snaps, answer.sh, pipeline, extension, gotchas, files).
+
+### BUG 4 fix (eager card advance + recovery)
+- [x] `handleEvaluateAndMoveNext` now advances `currentCardIndex` + `cardCacheIndex` synchronously right after `sendToolResult` instead of waiting for `response.done` in `giving_feedback`. The previous design locked the UI on the wrong card when Gemini ended a turn without audio (ctrl tokens + silent turnComplete, BUG 3 shape).
+- [x] `startEvaluatingRecovery()` arms an 8 s timer when the session enters `evaluating` (either user transcript or sim inject). If no `response.audio.delta` arrives, force-transitions to `awaiting_answer` and logs `evaluating_recovery`. Cancelled in audio.delta handler and in session-end paths.
+- [x] Reproduced E2E by `test-flow.sh` BEFORE the fix (cards 2/4 lock the session; subsequent injects rejected by phase guard). AFTER the fix: session no longer locks; uncertain answers still TIMEOUT against Gemini but the eval loop survives for confident answers later in the same session.
+- [x] `pendingCardAdvance` field deleted; reset paths in `endSession`, `endSessionFromNotification`, `scriptRunner`, jest tests, and `replay.test.ts` updated to clear the new recovery timer instead.
+- [x] All jest suites green: 115/115 passing, 2 skipped (TEST_REAL_GEMINI=1 gated).
+
+---
+
 ## Recently shipped (2026-05-08 — test-suite expansion + deck-mixing fix)
 
 ### Production fixes (commits)
@@ -150,10 +200,10 @@ The app currently uses Beta endpoints. Update to GA:
 - [ ] Run with `TEST_REAL_GEMINI=1 GEMINI_API_KEY=... npx jest realGemini.text`.
 - [ ] Estimated 1h, ~$0.10 in Gemini API costs.
 
-### P1 — Implement recovery for tool-call-no-audio
-- [ ] Currently the session sticks in `evaluating` if the AI tool-calls but never speaks. Layer 2 `toolCallNoAudio` characterizes the stuck state.
-- [ ] Add a timeout (e.g. 8 seconds) in the `evaluating` phase: if no `response.audio.delta` arrives, force-advance the card and transition to `awaiting_answer`.
-- [ ] Flip the `toolCallNoAudio` test assertion from "phase stuck in evaluating" to "phase recovers to awaiting_answer".
+### P1 — Implement recovery for tool-call-no-audio  **[DONE 2026-05-21]**
+- [x] Currently the session sticks in `evaluating` if the AI tool-calls but never speaks. Layer 2 `toolCallNoAudio` characterizes the stuck state.
+- [x] Add a timeout (e.g. 8 seconds) in the `evaluating` phase: if no `response.audio.delta` arrives, force-advance the card and transition to `awaiting_answer`. (`SessionManager.startEvaluatingRecovery`, 8 s.)
+- [x] Flipped: card eager-advances inside `handleEvaluateAndMoveNext` (BUG 4 fix); recovery timer handles the phase. E2E verified via `scripts/test-flow.sh`.
 
 ### P2 — Layer 2 fixture coverage gaps
 - [ ] `reconnectMidSession` — adds `__simulateConnectionDropped()` to `mockGeminiManager`; verifies reconnect → resume message → write-back continuity. Covers `installConnectionDropHandler` + `attemptReconnectAndResume` (~120 LOC currently untested).
