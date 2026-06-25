@@ -59,22 +59,32 @@ echo "────────────────────────�
 
 # ── Extract counts from the log ──────────────────────────────────────────────
 
-# Correct answers: Gemini called evaluate_and_move_next with quality=correct
-ACTUAL_CORRECT=$(grep -c 'quality.*correct\|"correct"' "$LOG_FILE" 2>/dev/null || true)
-
-# Incorrect answers: quality=incorrect
-ACTUAL_INCORRECT=$(grep -c 'quality.*incorrect\|"incorrect"' "$LOG_FILE" 2>/dev/null || true)
-
-# Skipped: skip tool call
-ACTUAL_SKIPPED=$(grep -c 'tool_call.*skip\|name.*skip' "$LOG_FILE" 2>/dev/null || true)
+# Grading counts are read from the tool-call ARGUMENT string
+# `user_response_quality":"<value>"`, which is logged exactly ONCE per
+# evaluate_and_move_next call. The earlier heuristic (`quality.*correct` /
+# `"correct"`) over-counted badly: it matched the word inside feedback text and
+# prompt echoes, and `*correct` even matched the substring inside "incorrect".
+# That looseness produced false PASSes that masked early session termination
+# (e.g. BUG 10 truncating a run after a skip). Anchoring on the arg string makes
+# the count exactly the number of gradings of each kind.
+#
+# There is NO separate `skip` tool — a skip is the "skipped" quality value of
+# evaluate_and_move_next (src/config/prompts.ts enum ['correct','incorrect','skipped']).
+ACTUAL_CORRECT=$(grep -c 'user_response_quality":"correct"'   "$LOG_FILE" 2>/dev/null || true)
+ACTUAL_INCORRECT=$(grep -c 'user_response_quality":"incorrect"' "$LOG_FILE" 2>/dev/null || true)
+ACTUAL_SKIPPED=$(grep -c 'user_response_quality":"skipped"'   "$LOG_FILE" 2>/dev/null || true)
 
 # Write-backs accepted by AnkiDroid (rows > 0)
-WRITEBACK_OK=$(grep 'row(s) updated\|rows updated' "$LOG_FILE" 2>/dev/null \
-    | grep -v ' 0 row' | wc -l | tr -d ' ')
+# NOTE: trailing `|| true` keeps the substitution alive under `set -o pipefail`.
+# When the inner grep matches nothing (e.g. no rejected write-backs — the happy
+# path), it exits 1, which pipefail would otherwise propagate and `set -e` would
+# treat as fatal, aborting the script right before it prints any results.
+WRITEBACK_OK=$( { grep 'row(s) updated\|rows updated' "$LOG_FILE" 2>/dev/null \
+    | grep -v ' 0 row' | wc -l | tr -d ' '; } || true )
 
 # Write-backs rejected (0 rows)
-WRITEBACK_ZERO=$(grep 'row(s) updated\|rows updated' "$LOG_FILE" 2>/dev/null \
-    | grep ' 0 row' | wc -l | tr -d ' ')
+WRITEBACK_ZERO=$( { grep 'row(s) updated\|rows updated' "$LOG_FILE" 2>/dev/null \
+    | grep ' 0 row' | wc -l | tr -d ' '; } || true )
 
 # Phase errors
 ERROR_PHASES=$(grep -c "→ error\|phase.*error" "$LOG_FILE" 2>/dev/null || true)
