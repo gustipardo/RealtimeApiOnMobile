@@ -146,3 +146,4 @@ Firebase Cloud Functions (TypeScript, Firebase Admin SDK):
 - `patches/` — One `patch-package` patch for `react-native-webrtc+124.0.7`.
 - `TODOLIST.md` — Current P0/P1 punch list (Firebase setup, auth wiring, Play Store products, PostHog key, app rename).
 - `SETUP.md` — Developer setup guide.
+- `PLAY-STORE.md` — Google Play policy & compliance notes. Read before preparing a Play release or answering "is X allowed on Play?" (cross-app AnkiDroid module, mic foreground service, Data Safety, the `com.anonymous.*` package rename, Anki trademark).
