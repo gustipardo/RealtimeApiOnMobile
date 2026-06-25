@@ -1,18 +1,46 @@
-import { realtimeManager as webrtcManager } from './realtimeManager';
-import { loadDueCards, getCurrentCard, getNextCard, getRemainingCardCount, getTotalCardCount, clearCards, peekNextCard, peekRemainingAfterAdvance, advanceCacheIndex, fetchAndAppendNextCard } from './cardLoader';
-import { useSessionStore } from '../stores/useSessionStore';
-import { useSettingsStore } from '../stores/useSettingsStore';
-import { useConnectionStore } from '../stores/useConnectionStore';
-import { ankiBridge } from '../native/ankiBridge';
-import { getSystemPrompt, allTools, getInitialMessage, getResumeMessage, formatToolResult } from '../config/prompts';
-import { startForegroundService, stopForegroundService, updateForegroundNotification, requestAudioFocus, clearAudioFocusPauseFlag, isServiceRunning } from './foregroundAudioService';
-import { startAudioLevelTracking, stopAudioLevelTracking } from './audioLevelTracker';
-import { AnalyticsEvents } from './analytics';
-import { sessionLog } from './sessionDebugLogger';
-import { sfxPlayer } from './sfxPlayer';
-import { transcriptIndicatesNextCard } from './uiAdvanceMatcher';
-import { useCardCacheStore } from '../stores/useCardCacheStore';
-import { recordSession, type TrialStatus } from './trialService';
+import { PermissionsAndroid } from "react-native";
+import { realtimeManager as webrtcManager } from "./realtimeManager";
+import {
+  loadDueCards,
+  getCurrentCard,
+  getNextCard,
+  getRemainingCardCount,
+  getTotalCardCount,
+  clearCards,
+  peekNextCard,
+  peekRemainingAfterAdvance,
+  advanceCacheIndex,
+  fetchAndAppendNextCard,
+} from "./cardLoader";
+import { useSessionStore } from "../stores/useSessionStore";
+import { useSettingsStore } from "../stores/useSettingsStore";
+import { useConnectionStore } from "../stores/useConnectionStore";
+import { ankiBridge } from "../native/ankiBridge";
+import {
+  getSystemPrompt,
+  allTools,
+  getInitialMessage,
+  getResumeMessage,
+  formatToolResult,
+} from "../config/prompts";
+import {
+  startForegroundService,
+  stopForegroundService,
+  updateForegroundNotification,
+  requestAudioFocus,
+  clearAudioFocusPauseFlag,
+  isServiceRunning,
+} from "./foregroundAudioService";
+import {
+  startAudioLevelTracking,
+  stopAudioLevelTracking,
+} from "./audioLevelTracker";
+import { AnalyticsEvents } from "./analytics";
+import { sessionLog } from "./sessionDebugLogger";
+import { sfxPlayer } from "./sfxPlayer";
+import { transcriptIndicatesNextCard } from "./uiAdvanceMatcher";
+import { useCardCacheStore } from "../stores/useCardCacheStore";
+import { recordSession, type TrialStatus } from "./trialService";
 
 /**
  * Session Manager - Orchestrates the study session
@@ -83,7 +111,7 @@ class SessionManager {
    * on arm + commit; appended on every transcript event. See SESSION-FLOW.md
    * §4.BUG 14.
    */
-  private pendingUiTranscriptAccum: string = '';
+  private pendingUiTranscriptAccum: string = "";
   private pendingUiAdvanceTimer: ReturnType<typeof setTimeout> | null = null;
   /**
    * Timeout fallback for when the transcript matcher never crosses the
@@ -105,7 +133,7 @@ class SessionManager {
     const { selectedDeck } = useSettingsStore.getState();
 
     if (!selectedDeck) {
-      throw new Error('No deck selected');
+      throw new Error("No deck selected");
     }
 
     sessionLog.banner(`Starting session — deck: "${selectedDeck}"`);
@@ -121,13 +149,18 @@ class SessionManager {
       // ── STEP 1 ── Connect WebSocket to Gemini ─────────────────────────────
       const connectionState = useConnectionStore.getState().connectionState;
       sessionLog.step(1, { deck: selectedDeck, prev_state: connectionState });
-      if (connectionState !== 'connected') {
-        transitionTo('connecting', 'startSession');
+      if (connectionState !== "connected") {
+        transitionTo("connecting", "startSession");
         await webrtcManager.connect();
       } else {
-        sessionLog.info('SessionManager', 'WebSocket already connected — skipping connect()');
+        sessionLog.info(
+          "SessionManager",
+          "WebSocket already connected — skipping connect()",
+        );
       }
-      sessionLog.stepDone(1, { state: useConnectionStore.getState().connectionState });
+      sessionLog.stepDone(1, {
+        state: useConnectionStore.getState().connectionState,
+      });
 
       // ── STEP 1b ── Trial quota check (server-authoritative) ──────────────
       // The deck-select screen pre-checks trialStatus on focus, but there's
@@ -141,9 +174,9 @@ class SessionManager {
       // best-effort on network errors (returns the unlocked shape), so a
       // transient blip doesn't block the session — the next checkTrialStatus
       // from deck-select will re-sync.
-      sessionLog.step('1b', { waiting_for: 'recordSession' });
+      sessionLog.step("1b", { waiting_for: "recordSession" });
       const trialAfterStart: TrialStatus = await recordSession();
-      sessionLog.stepDone('1b', {
+      sessionLog.stepDone("1b", {
         subscriptionActive: trialAfterStart.subscriptionActive,
         daysRemaining: trialAfterStart.daysRemaining,
         sessionsRemaining: trialAfterStart.sessionsRemaining,
@@ -151,17 +184,22 @@ class SessionManager {
       if (!trialAfterStart.isActive && !trialAfterStart.subscriptionActive) {
         // Server says trial expired between the deck-select pre-check and
         // here. Bail out before we touch the audio stack or load cards.
-        sessionLog.warn('SessionManager', 'trial expired between deck-select and startSession');
+        sessionLog.warn(
+          "SessionManager",
+          "trial expired between deck-select and startSession",
+        );
         // Disconnect what Step 1 just opened — the audio socket is open
         // but we don't want to leave the user on a connect-then-paywall
         // dead-end.
         try {
           webrtcManager.disconnect();
-        } catch (_) { /* best-effort */ }
-        transitionTo('error', 'trial_expired');
-        AnalyticsEvents.paywallShown('trial_expired_at_start');
-        const err: any = new Error('Trial expired');
-        err.code = 'trial_expired';
+        } catch (_) {
+          /* best-effort */
+        }
+        transitionTo("error", "trial_expired");
+        AnalyticsEvents.paywallShown("trial_expired_at_start");
+        const err: any = new Error("Trial expired");
+        err.code = "trial_expired";
         throw err;
       }
 
@@ -175,17 +213,17 @@ class SessionManager {
       // Mute microphone during setup to prevent default server_vad
       // from picking up audio before our session config is applied.
       webrtcManager.setMicrophoneMuted(true);
-      sessionLog.stepDone(2, { mic: 'muted', level_tracker: 'started' });
+      sessionLog.stepDone(2, { mic: "muted", level_tracker: "started" });
 
       // ── STEP 3 ── Load due cards from AnkiDroid ───────────────────────────
       sessionLog.step(3, { deck: selectedDeck });
-      transitionTo('loading_cards', 'startSession');
+      transitionTo("loading_cards", "startSession");
       const cards = await loadDueCards(selectedDeck);
 
       if (cards.length === 0) {
-        sessionLog.stepFail(3, 'no cards due for this deck');
-        transitionTo('error', 'no_cards');
-        throw new Error('No cards due for review in this deck');
+        sessionLog.stepFail(3, "no cards due for this deck");
+        transitionTo("error", "no_cards");
+        throw new Error("No cards due for review in this deck");
       }
       sessionLog.stepDone(3, {
         cards_loaded: cards.length,
@@ -205,15 +243,19 @@ class SessionManager {
         const matched = deckInfos.find((d) => d.deckName === selectedDeck);
         dueAtStart = matched?.dueCount ?? cards.length;
         useSessionStore.getState().setTotalDueAtStart(dueAtStart);
-        sessionLog.info('SessionManager', 'totalDueAtStart snapshot', {
+        sessionLog.info("SessionManager", "totalDueAtStart snapshot", {
           deck: selectedDeck,
           due_today: dueAtStart,
           cache_size: cards.length,
         });
       } catch (err) {
-        sessionLog.warn('SessionManager', 'getDeckInfo for due snapshot failed — falling back to cache size', {
-          error: String(err),
-        });
+        sessionLog.warn(
+          "SessionManager",
+          "getDeckInfo for due snapshot failed — falling back to cache size",
+          {
+            error: String(err),
+          },
+        );
         useSessionStore.getState().setTotalDueAtStart(cards.length);
       }
 
@@ -223,15 +265,34 @@ class SessionManager {
       // tutor's greeting, and cards.length is always 1 under the v3b cache.
       // That's how BUG 10's "tutor says you have 1 card" symptom landed
       // even though we'd already fixed remaining_cards in the tool result.
-      sessionLog.step(4, { cards: dueAtStart, vad: 'disabled (until first reply)' });
-      transitionTo('ready', 'cards_loaded');
+      sessionLog.step(4, {
+        cards: dueAtStart,
+        vad: "disabled (until first reply)",
+      });
+      transitionTo("ready", "cards_loaded");
       await this.configureAISession(selectedDeck, dueAtStart);
-      sessionLog.stepDone(4, { setup: 'acknowledged' });
+      sessionLog.stepDone(4, { setup: "acknowledged" });
 
       // Register event handlers + connection-loss machinery
       this.registerEventHandlers();
       this.installConnectionDropHandler();
       this.subscribeToConnectionState();
+
+      // Guard: RECORD_AUDIO must be granted before starting the mic foreground
+      // service. On targetSDK ≥ 34 Android throws a process-killing SecurityException
+      // if the permission is absent — the try/catch below cannot catch it. Throw a
+      // friendly JS error here instead so session.tsx surfaces it to the user.
+      const hasMicPermission = await PermissionsAndroid.check(
+        PermissionsAndroid.PERMISSIONS.RECORD_AUDIO,
+      );
+      if (!hasMicPermission) {
+        throw Object.assign(
+          new Error(
+            "Microphone permission is required. Grant it in Settings → Apps → Engram → Permissions and try again.",
+          ),
+          { code: "missing_mic_permission" },
+        );
+      }
 
       // Start foreground service NOW — before sendFirstCard. The phone-call-style
       // notification needs to be live the moment the user commits to a session, not
@@ -241,12 +302,16 @@ class SessionManager {
       // started — user saw a session running with no notification when minimized.
       try {
         await startForegroundService(
-          'Voice Study Session',
-          `Card 1 of ${dueAtStart}`
+          "Voice Study Session",
+          `Card 1 of ${dueAtStart}`,
         );
-        sessionLog.info('SessionManager', 'foreground service started');
+        sessionLog.info("SessionManager", "foreground service started");
       } catch (fgError) {
-        sessionLog.warn('SessionManager', 'foreground service failed (non-fatal)', { error: String(fgError) });
+        sessionLog.warn(
+          "SessionManager",
+          "foreground service failed (non-fatal)",
+          { error: String(fgError) },
+        );
       }
 
       // ── STEP 5+6 ── Send first card → wait for first response ─────────────
@@ -255,22 +320,23 @@ class SessionManager {
         await this.sendFirstCard(firstCard.front, firstCard.back);
         // The AI has finished its first response (greeting + question).
         // Go straight to awaiting_answer since the question was already asked.
-        transitionTo('awaiting_answer', 'first_card_sent');
+        transitionTo("awaiting_answer", "first_card_sent");
       }
 
       // ── STEP 7 ── Unmute microphone (study loop active) ───────────────────
       sessionLog.step(7);
       webrtcManager.setMicrophoneMuted(false);
-      sessionLog.stepDone(7, { mic: 'live', vad: 'server_vad@0.6' });
+      sessionLog.stepDone(7, { mic: "live", vad: "server_vad@0.6" });
 
       // Track session start
       AnalyticsEvents.sessionStarted(selectedDeck, cards.length);
-
     } catch (error: any) {
-      sessionLog.error('SessionManager', 'startSession failed', { message: error?.message });
-      AnalyticsEvents.sessionError(error?.message || 'start_failed');
+      sessionLog.error("SessionManager", "startSession failed", {
+        message: error?.message,
+      });
+      AnalyticsEvents.sessionError(error?.message || "start_failed");
       stopAudioLevelTracking();
-      transitionTo('error', 'start_failed');
+      transitionTo("error", "start_failed");
       throw error;
     }
   }
@@ -281,21 +347,31 @@ class SessionManager {
    * server_vad cannot race with our initial card message.
    * Waits for the server to acknowledge the update before resolving.
    */
-  private async configureAISession(deckName: string, cardCount: number): Promise<void> {
-    const { alwaysReadBack, deckInstructions, deckLanguages } = useSettingsStore.getState();
+  private async configureAISession(
+    deckName: string,
+    cardCount: number,
+  ): Promise<void> {
+    const { alwaysReadBack, deckInstructions, deckLanguages } =
+      useSettingsStore.getState();
     const customInstructions = deckInstructions[deckName] || undefined;
     // Per-deck language: drives both the system prompt's "Language: X ONLY"
     // line and Gemini Live's speechConfig.languageCode (TTS voice + tighter
     // recognition). Undefined → English fallback inside getSystemPrompt and
     // server default for speechConfig.
     const languageCode = deckLanguages[deckName] || undefined;
-    const systemPrompt = getSystemPrompt(deckName, cardCount, alwaysReadBack, customInstructions, languageCode);
+    const systemPrompt = getSystemPrompt(
+      deckName,
+      cardCount,
+      alwaysReadBack,
+      customInstructions,
+      languageCode,
+    );
 
     await webrtcManager.updateSession({
       instructions: systemPrompt,
       tools: allTools,
-      modalities: ['text', 'audio'],
-      turn_detection: null,  // Disabled until first AI response completes
+      modalities: ["text", "audio"],
+      turn_detection: null, // Disabled until first AI response completes
       languageCode,
     });
   }
@@ -308,36 +384,39 @@ class SessionManager {
     const message = getInitialMessage(front, back);
 
     sessionLog.step(5, { front, back, message_len: message.length });
-    sessionLog.debug('SessionManager', 'initial message body', { message });
+    sessionLog.debug("SessionManager", "initial message body", { message });
 
     // Send the card as a user message and request a response
     webrtcManager.sendTextMessage(message);
-    sessionLog.stepDone(5, { sent: 'clientContent[user] + turnComplete' });
+    sessionLog.stepDone(5, { sent: "clientContent[user] + turnComplete" });
 
     // Wait for the AI to finish its first response before enabling VAD.
     // This guarantees the AI has processed the card content in its context.
-    sessionLog.step(6, { waiting_for: 'response.done' });
+    sessionLog.step(6, { waiting_for: "response.done" });
     await webrtcManager.waitForNextResponseDone();
-    sessionLog.stepDone(6, { result: 'AI first turn complete' });
+    sessionLog.stepDone(6, { result: "AI first turn complete" });
 
     // Clear any buffered audio from the manual-mode phase before enabling VAD
-    webrtcManager.sendEvent({ type: 'input_audio_buffer.clear' });
+    webrtcManager.sendEvent({ type: "input_audio_buffer.clear" });
 
     // NOW enable server_vad for ongoing voice interaction
     // Threshold 0.6 (above default 0.5) to reduce false triggers from ambient noise
     await webrtcManager.updateSession({
       turn_detection: {
-        type: 'server_vad',
+        type: "server_vad",
         threshold: 0.6,
         prefix_padding_ms: 300,
         silence_duration_ms: 500,
       },
     });
-    sessionLog.info('SessionManager', 'server_vad enabled');
-    sessionLog.debug('SessionManager', 'audio track state — after vad enable');
-    await webrtcManager.debugAudioTrackState('after-vad-enabled');
+    sessionLog.info("SessionManager", "server_vad enabled");
+    sessionLog.debug("SessionManager", "audio track state — after vad enable");
+    await webrtcManager.debugAudioTrackState("after-vad-enabled");
     if (sessionLog.isVerbose()) {
-      setTimeout(() => webrtcManager.debugAudioTrackState('5s-after-vad'), 5000);
+      setTimeout(
+        () => webrtcManager.debugAudioTrackState("5s-after-vad"),
+        5000,
+      );
     }
   }
 
@@ -348,16 +427,21 @@ class SessionManager {
     const { transitionTo } = useSessionStore.getState();
 
     // Handle tool calls
-    webrtcManager.on('response.function_call_arguments.done', this.handleToolCall.bind(this));
+    webrtcManager.on(
+      "response.function_call_arguments.done",
+      this.handleToolCall.bind(this),
+    );
 
     // Handle AI speaking (giving feedback). Audio.delta is the first real
     // signal that the AI is *actually* speaking (not just emitting control
     // tokens). It also cancels the evaluating-recovery timer.
-    webrtcManager.on('response.audio.delta', () => {
+    webrtcManager.on("response.audio.delta", () => {
       const phase = useSessionStore.getState().phase;
-      if (phase === 'evaluating') {
+      if (phase === "evaluating") {
         this.clearEvaluatingRecovery();
-        useSessionStore.getState().transitionTo('giving_feedback', 'ai_speaking');
+        useSessionStore
+          .getState()
+          .transitionTo("giving_feedback", "ai_speaking");
       }
     });
 
@@ -374,24 +458,24 @@ class SessionManager {
     //   3. Recovery: turn ended in `evaluating` WITHOUT preceding audio
     //      (Gemini emitted only control tokens, BUG 3 shape). The
     //      recovery timer handles forcing us out — we don't act here.
-    webrtcManager.on('response.done', () => {
+    webrtcManager.on("response.done", () => {
       // BUG 12 fallback: if a UI advance is still pending, the AI's whole
       // turn finished without the transcript ever crossing the next-card
       // threshold (and the 3.5 s timer hasn't fired yet — rare, only on
       // very short feedback turns). Flush now so the next grading cycle
       // doesn't start with stale UI.
-      this.commitPendingUiAdvance('response_done');
+      this.commitPendingUiAdvance("response_done");
       const phase = useSessionStore.getState().phase;
-      if (phase === 'giving_feedback') {
-        useSessionStore.getState().transitionTo('awaiting_answer', 'ai_done');
+      if (phase === "giving_feedback") {
+        useSessionStore.getState().transitionTo("awaiting_answer", "ai_done");
       }
     });
 
     // Handle user speaking (logging only — debounce cancel is below).
-    webrtcManager.on('input_audio_buffer.speech_started', () => {
+    webrtcManager.on("input_audio_buffer.speech_started", () => {
       const phase = useSessionStore.getState().phase;
-      if (phase === 'awaiting_answer') {
-        sessionLog.event('mic', 'user speech started');
+      if (phase === "awaiting_answer") {
+        sessionLog.event("mic", "user speech started");
       }
     });
 
@@ -404,13 +488,17 @@ class SessionManager {
     //      and match the running text against the next card's front. A
     //      per-chunk match is impossible (1 word can't satisfy the
     //      2-hit threshold) so this accumulation step is load-bearing.
-    webrtcManager.on('response.audio_transcript.done', (event: any) => {
-      const chunk = typeof event.transcript === 'string' ? event.transcript : '';
-      sessionLog.event('AI', 'transcript', { text: chunk });
+    webrtcManager.on("response.audio_transcript.done", (event: any) => {
+      const chunk =
+        typeof event.transcript === "string" ? event.transcript : "";
+      sessionLog.event("AI", "transcript", { text: chunk });
       if (!this.pendingUiNextCardFront) return;
-      this.pendingUiTranscriptAccum =
-        (this.pendingUiTranscriptAccum + ' ' + chunk).trim();
-      sessionLog.event('AI', 'transcript accum', {
+      this.pendingUiTranscriptAccum = (
+        this.pendingUiTranscriptAccum +
+        " " +
+        chunk
+      ).trim();
+      sessionLog.event("AI", "transcript accum", {
         accum_len: this.pendingUiTranscriptAccum.length,
         accum: this.pendingUiTranscriptAccum,
       });
@@ -420,11 +508,11 @@ class SessionManager {
           this.pendingUiNextCardFront,
         )
       ) {
-        sessionLog.event('UI', 'transcript_match firing', {
+        sessionLog.event("UI", "transcript_match firing", {
           accum: this.pendingUiTranscriptAccum,
           next_card_front: this.pendingUiNextCardFront,
         });
-        this.commitPendingUiAdvance('transcript_match');
+        this.commitPendingUiAdvance("transcript_match");
       }
     });
 
@@ -434,21 +522,27 @@ class SessionManager {
     // within USER_DONE_DEBOUNCE_MS, we treat the user as done. This shows
     // the Evaluating state during Gemini's inference window instead of
     // waiting for the tool call (which can be 1–3s later).
-    webrtcManager.on('conversation.item.input_audio_transcription.completed', (event: any) => {
-      sessionLog.event('user', 'transcript', { text: event.transcript });
-      const phase = useSessionStore.getState().phase;
-      if (phase !== 'awaiting_answer') return;
-      if (this.userDoneSpeakingTimer) clearTimeout(this.userDoneSpeakingTimer);
-      this.userDoneSpeakingTimer = setTimeout(() => {
-        this.userDoneSpeakingTimer = null;
-        if (useSessionStore.getState().phase !== 'awaiting_answer') return;
-        useSessionStore.getState().transitionTo('evaluating', 'user_done_debounced');
-        this.startEvaluatingRecovery();
-      }, SessionManager.USER_DONE_DEBOUNCE_MS);
-    });
+    webrtcManager.on(
+      "conversation.item.input_audio_transcription.completed",
+      (event: any) => {
+        sessionLog.event("user", "transcript", { text: event.transcript });
+        const phase = useSessionStore.getState().phase;
+        if (phase !== "awaiting_answer") return;
+        if (this.userDoneSpeakingTimer)
+          clearTimeout(this.userDoneSpeakingTimer);
+        this.userDoneSpeakingTimer = setTimeout(() => {
+          this.userDoneSpeakingTimer = null;
+          if (useSessionStore.getState().phase !== "awaiting_answer") return;
+          useSessionStore
+            .getState()
+            .transitionTo("evaluating", "user_done_debounced");
+          this.startEvaluatingRecovery();
+        }, SessionManager.USER_DONE_DEBOUNCE_MS);
+      },
+    );
 
     // Cancel debounce if user starts speaking again (new utterance begins).
-    webrtcManager.on('input_audio_buffer.speech_started', () => {
+    webrtcManager.on("input_audio_buffer.speech_started", () => {
       if (this.userDoneSpeakingTimer) {
         clearTimeout(this.userDoneSpeakingTimer);
         this.userDoneSpeakingTimer = null;
@@ -456,9 +550,9 @@ class SessionManager {
     });
 
     // Track tool call names
-    webrtcManager.on('response.output_item.added', (event: any) => {
+    webrtcManager.on("response.output_item.added", (event: any) => {
       const item = event.item;
-      if (item?.type === 'function_call') {
+      if (item?.type === "function_call") {
         this.toolCallNames.set(item.call_id, item.name);
       }
     });
@@ -471,53 +565,79 @@ class SessionManager {
     // Unsubscribe any previous listener (safety)
     this.unsubscribeFromConnectionState();
 
-    this.connectionUnsubscribe = useConnectionStore.subscribe((state, prevState) => {
-      const { connectionState } = state;
-      const prevConnectionState = prevState.connectionState;
+    this.connectionUnsubscribe = useConnectionStore.subscribe(
+      (state, prevState) => {
+        const { connectionState } = state;
+        const prevConnectionState = prevState.connectionState;
 
-      // Skip if state hasn't actually changed
-      if (connectionState === prevConnectionState) return;
+        // Skip if state hasn't actually changed
+        if (connectionState === prevConnectionState) return;
 
-      const { phase } = useSessionStore.getState();
-      const { transitionTo } = useSessionStore.getState();
+        const { phase } = useSessionStore.getState();
+        const { transitionTo } = useSessionStore.getState();
 
-      // --- Connection lost ---
-      // The onConnectionDropped handler manages full reconnect flow.
-      // This subscriber handles the intermediate state where ICE briefly
-      // goes to 'reconnecting' but may self-recover without needing a
-      // full reconnect. If the phase is already 'reconnecting', the
-      // drop handler is managing the flow — don't interfere.
-      if (connectionState === 'reconnecting' || connectionState === 'failed') {
-        const activePhases = [
-          'asking_question', 'awaiting_answer', 'evaluating',
-          'giving_feedback', 'advancing', 'ready',
-        ];
-        if (activePhases.includes(phase)) {
-          sessionLog.warn('SessionManager', 'connection state changed — muting mic', { to: connectionState });
-          this.phaseBeforeNetworkPause = phase;
-          webrtcManager.setMicrophoneMuted(true);
-          // Don't transition to paused here — let onConnectionDropped
-          // handle the transition to 'reconnecting' phase.
-        }
-      }
-
-      // --- Connection restored (ICE self-recovery) ---
-      // ICE can transition back to 'connected' after a brief 'disconnected'
-      // without needing a full reconnect. In that case the session phase
-      // will still be in a network-paused state with phaseBeforeNetworkPause set.
-      if (connectionState === 'connected' && (prevConnectionState === 'reconnecting' || prevConnectionState === 'failed')) {
-        if (this.phaseBeforeNetworkPause && (phase === 'paused' || phase === 'reconnecting')) {
-          // If phase is 'reconnecting', the resumeAfterReconnect flow
-          // will handle restoration — don't interfere.
-          if (phase === 'paused') {
-            sessionLog.info('SessionManager', 'ICE self-recovered — resuming session');
-            webrtcManager.setMicrophoneMuted(false);
-            transitionTo(this.phaseBeforeNetworkPause as any, 'connection_restored');
-            this.phaseBeforeNetworkPause = null;
+        // --- Connection lost ---
+        // The onConnectionDropped handler manages full reconnect flow.
+        // This subscriber handles the intermediate state where ICE briefly
+        // goes to 'reconnecting' but may self-recover without needing a
+        // full reconnect. If the phase is already 'reconnecting', the
+        // drop handler is managing the flow — don't interfere.
+        if (
+          connectionState === "reconnecting" ||
+          connectionState === "failed"
+        ) {
+          const activePhases = [
+            "asking_question",
+            "awaiting_answer",
+            "evaluating",
+            "giving_feedback",
+            "advancing",
+            "ready",
+          ];
+          if (activePhases.includes(phase)) {
+            sessionLog.warn(
+              "SessionManager",
+              "connection state changed — muting mic",
+              { to: connectionState },
+            );
+            this.phaseBeforeNetworkPause = phase;
+            webrtcManager.setMicrophoneMuted(true);
+            // Don't transition to paused here — let onConnectionDropped
+            // handle the transition to 'reconnecting' phase.
           }
         }
-      }
-    });
+
+        // --- Connection restored (ICE self-recovery) ---
+        // ICE can transition back to 'connected' after a brief 'disconnected'
+        // without needing a full reconnect. In that case the session phase
+        // will still be in a network-paused state with phaseBeforeNetworkPause set.
+        if (
+          connectionState === "connected" &&
+          (prevConnectionState === "reconnecting" ||
+            prevConnectionState === "failed")
+        ) {
+          if (
+            this.phaseBeforeNetworkPause &&
+            (phase === "paused" || phase === "reconnecting")
+          ) {
+            // If phase is 'reconnecting', the resumeAfterReconnect flow
+            // will handle restoration — don't interfere.
+            if (phase === "paused") {
+              sessionLog.info(
+                "SessionManager",
+                "ICE self-recovered — resuming session",
+              );
+              webrtcManager.setMicrophoneMuted(false);
+              transitionTo(
+                this.phaseBeforeNetworkPause as any,
+                "connection_restored",
+              );
+              this.phaseBeforeNetworkPause = null;
+            }
+          }
+        }
+      },
+    );
   }
 
   /**
@@ -540,21 +660,30 @@ class SessionManager {
 
       // Only attempt reconnect if we are in an active study phase
       const activePhases = [
-        'asking_question', 'awaiting_answer', 'evaluating',
-        'giving_feedback', 'advancing', 'ready', 'paused',
+        "asking_question",
+        "awaiting_answer",
+        "evaluating",
+        "giving_feedback",
+        "advancing",
+        "ready",
+        "paused",
       ];
       if (!activePhases.includes(phase)) return;
 
-      sessionLog.warn('SessionManager', 'connection dropped — starting reconnect flow', { phase });
+      sessionLog.warn(
+        "SessionManager",
+        "connection dropped — starting reconnect flow",
+        { phase },
+      );
 
       // Save the phase so we can restore it later
-      if (phase !== 'paused') {
+      if (phase !== "paused") {
         this.phaseBeforeNetworkPause = phase;
       }
 
       const { transitionTo } = useSessionStore.getState();
       webrtcManager.setMicrophoneMuted(true);
-      transitionTo('reconnecting', 'connection_dropped');
+      transitionTo("reconnecting", "connection_dropped");
 
       // Kick off reconnect asynchronously
       this.attemptReconnectAndResume();
@@ -574,15 +703,22 @@ class SessionManager {
       try {
         await this.resumeAfterReconnect();
         AnalyticsEvents.sessionReconnected(
-          useConnectionStore.getState().reconnectAttempts
+          useConnectionStore.getState().reconnectAttempts,
         );
       } catch (error) {
-        sessionLog.error('SessionManager', 'failed to resume session after reconnect', { message: (error as any)?.message });
-        transitionTo('error', 'resume_failed');
+        sessionLog.error(
+          "SessionManager",
+          "failed to resume session after reconnect",
+          { message: (error as any)?.message },
+        );
+        transitionTo("error", "resume_failed");
       }
     } else {
-      sessionLog.error('SessionManager', 'reconnect failed — transitioning to error');
-      transitionTo('error', 'reconnect_failed');
+      sessionLog.error(
+        "SessionManager",
+        "reconnect failed — transitioning to error",
+      );
+      transitionTo("error", "reconnect_failed");
     }
   }
 
@@ -598,10 +734,10 @@ class SessionManager {
     const { selectedDeck } = useSettingsStore.getState();
 
     if (!selectedDeck) {
-      throw new Error('No deck selected for resume');
+      throw new Error("No deck selected for resume");
     }
 
-    sessionLog.banner('Resuming session after reconnect');
+    sessionLog.banner("Resuming session after reconnect");
 
     // 1. Re-configure AI session (system prompt + tools)
     const totalCards = getTotalCardCount();
@@ -614,13 +750,19 @@ class SessionManager {
     // updates the existing notification.
     if (!isServiceRunning()) {
       try {
-        const completedSoFar = useSessionStore.getState().stats.correct + useSessionStore.getState().stats.incorrect;
+        const completedSoFar =
+          useSessionStore.getState().stats.correct +
+          useSessionStore.getState().stats.incorrect;
         await startForegroundService(
-          'Voice Study Session',
-          `Card ${completedSoFar + 1} of ${totalCards}`
+          "Voice Study Session",
+          `Card ${completedSoFar + 1} of ${totalCards}`,
         );
       } catch (fgError) {
-        sessionLog.warn('SessionManager', 'failed to start foreground service on resume', { error: String(fgError) });
+        sessionLog.warn(
+          "SessionManager",
+          "failed to start foreground service on resume",
+          { error: String(fgError) },
+        );
       }
     }
 
@@ -639,30 +781,38 @@ class SessionManager {
         currentCard.front,
         currentCard.back,
         remainingCards,
-        stats
+        stats,
       );
 
-      sessionLog.info('SessionManager', 'sending resume message to AI', { remaining: remainingCards, stats });
+      sessionLog.info("SessionManager", "sending resume message to AI", {
+        remaining: remainingCards,
+        stats,
+      });
       webrtcManager.sendTextMessage(resumeMsg);
 
       // Wait for AI to finish its resume response
       await webrtcManager.waitForNextResponseDone();
 
-      sessionLog.info('SessionManager', 'AI resume response complete — enabling server_vad');
+      sessionLog.info(
+        "SessionManager",
+        "AI resume response complete — enabling server_vad",
+      );
 
       // Clear buffered audio and enable server_vad
-      webrtcManager.sendEvent({ type: 'input_audio_buffer.clear' });
+      webrtcManager.sendEvent({ type: "input_audio_buffer.clear" });
       await webrtcManager.updateSession({
-        turn_detection: { type: 'server_vad' },
+        turn_detection: { type: "server_vad" },
       });
     }
 
     // 5. Transition back to active phase
-    const restorePhase = this.phaseBeforeNetworkPause || 'awaiting_answer';
-    transitionTo(restorePhase as any, 'reconnect_resumed');
+    const restorePhase = this.phaseBeforeNetworkPause || "awaiting_answer";
+    transitionTo(restorePhase as any, "reconnect_resumed");
     this.phaseBeforeNetworkPause = null;
 
-    sessionLog.info('SessionManager', 'session resumed', { phase: restorePhase });
+    sessionLog.info("SessionManager", "session resumed", {
+      phase: restorePhase,
+    });
   }
 
   /**
@@ -673,32 +823,40 @@ class SessionManager {
     const toolName = this.toolCallNames.get(call_id);
 
     try {
-      const args = JSON.parse(argsStr || '{}');
+      const args = JSON.parse(argsStr || "{}");
 
       switch (toolName) {
-        case 'evaluate_and_move_next':
+        case "evaluate_and_move_next":
           await this.handleEvaluateAndMoveNext(call_id, args);
           break;
-        case 'override_evaluation':
+        case "override_evaluation":
           await this.handleOverrideEvaluation(call_id, args);
           break;
-        case 'end_session':
+        case "end_session":
           await this.handleEndSessionTool(call_id);
           break;
         default:
-          sessionLog.warn('SessionManager', 'unknown tool', { name: toolName, call_id });
+          sessionLog.warn("SessionManager", "unknown tool", {
+            name: toolName,
+            call_id,
+          });
       }
     } catch (error: any) {
-      sessionLog.error('SessionManager', 'tool call handler threw', { message: error?.message });
+      sessionLog.error("SessionManager", "tool call handler threw", {
+        message: error?.message,
+      });
     }
   }
 
   /**
    * Handle evaluate_and_move_next tool
    */
-  private async handleEvaluateAndMoveNext(callId: string, args: any): Promise<void> {
+  private async handleEvaluateAndMoveNext(
+    callId: string,
+    args: any,
+  ): Promise<void> {
     const { user_response_quality, feedback_text } = args;
-    sessionLog.event('tool_call', 'evaluate_and_move_next', {
+    sessionLog.event("tool_call", "evaluate_and_move_next", {
       quality: user_response_quality,
       feedback: feedback_text,
       call_id: callId,
@@ -731,21 +889,21 @@ class SessionManager {
     // the refill may return the same noteId (AnkiDroid hadn't reshuffled
     // yet, user sees the same card briefly), but the session does not
     // lock up.
-    if (user_response_quality !== 'skipped') {
-      recordAnswer(user_response_quality as 'correct' | 'incorrect');
+    if (user_response_quality !== "skipped") {
+      recordAnswer(user_response_quality as "correct" | "incorrect");
       // Fire the SFX in the same tick as recordAnswer — that's the action
       // that flips `lastEvaluation`, which makes the on-screen banner
       // appear. The chime lands with the banner and fills the silent gap
       // before the tutor's spoken feedback starts (~1–2 s later).
-      sfxPlayer.play(user_response_quality as 'correct' | 'incorrect');
-      transitionTo('evaluating', 'tool_called');
+      sfxPlayer.play(user_response_quality as "correct" | "incorrect");
+      transitionTo("evaluating", "tool_called");
 
       const { selectedDeck: deckForAnswer } = useSettingsStore.getState();
       if (answeredCardId != null && answeredCardOrd != null && deckForAnswer) {
         this.lastAnsweredCardId = answeredCardId;
         this.lastAnsweredCardOrd = answeredCardOrd;
-        const pass = user_response_quality === 'correct';
-        sessionLog.event('AnkiDroid', 'write-back + refill', {
+        const pass = user_response_quality === "correct";
+        sessionLog.event("AnkiDroid", "write-back + refill", {
           cardId: answeredCardId,
           ord: answeredCardOrd,
           pass,
@@ -754,13 +912,22 @@ class SessionManager {
         await Promise.race([
           (async () => {
             try {
-              await ankiBridge.answerCard(deckForAnswer, answeredCardId, answeredCardOrd, pass);
+              await ankiBridge.answerCard(
+                deckForAnswer,
+                answeredCardId,
+                answeredCardOrd,
+                pass,
+              );
             } catch (err) {
-              sessionLog.warn('AnkiDroid', 'write-back error (non-fatal)', { error: String(err) });
+              sessionLog.warn("AnkiDroid", "write-back error (non-fatal)", {
+                error: String(err),
+              });
             }
             await fetchAndAppendNextCard(deckForAnswer);
           })(),
-          new Promise<void>((resolve) => setTimeout(resolve, ANSWER_REFILL_TIMEOUT_MS)),
+          new Promise<void>((resolve) =>
+            setTimeout(resolve, ANSWER_REFILL_TIMEOUT_MS),
+          ),
         ]);
       }
     }
@@ -790,11 +957,11 @@ class SessionManager {
       answeredCardBack,
       nextCard ? { front: nextCard.front, back: nextCard.back } : null,
       remainingCards,
-      stats
+      stats,
     );
 
     // Send result back to AI
-    sessionLog.event('tool_result', 'evaluate_and_move_next → Gemini', {
+    sessionLog.event("tool_result", "evaluate_and_move_next → Gemini", {
       answered_back: answeredCardBack,
       next_card_front: nextCard?.front ?? null,
       remaining: remainingCards,
@@ -832,19 +999,19 @@ class SessionManager {
       const total = getTotalCardCount();
       const completed = stats.correct + stats.incorrect;
       updateForegroundNotification(
-        'Voice Study Session',
-        `Card ${completed + 1} of ${total}`
+        "Voice Study Session",
+        `Card ${completed + 1} of ${total}`,
       ).catch(() => {}); // Non-fatal
     } else {
       // No more cards — end session.
-      sessionLog.step(8, { reason: 'no_more_cards', stats });
+      sessionLog.step(8, { reason: "no_more_cards", stats });
       useSessionStore.getState().advanceCard();
       advanceCacheIndex();
       this.clearEvaluatingRecovery();
       // Flush any still-pending UI advance from the previous card so the
       // session_complete transition doesn't leave a half-applied lag.
-      this.commitPendingUiAdvance('session_complete');
-      transitionTo('session_complete', 'no_more_cards');
+      this.commitPendingUiAdvance("session_complete");
+      transitionTo("session_complete", "no_more_cards");
       await this.onSessionComplete();
     }
   }
@@ -859,11 +1026,15 @@ class SessionManager {
     this.clearEvaluatingRecovery();
     this.evaluatingRecoveryTimer = setTimeout(() => {
       const phase = useSessionStore.getState().phase;
-      if (phase !== 'evaluating') return;
-      sessionLog.warn('SessionManager',
-        'evaluating-recovery: no AI audio after tool result — forcing awaiting_answer',
-        { timeout_ms: SessionManager.EVALUATING_RECOVERY_TIMEOUT_MS });
-      useSessionStore.getState().transitionTo('awaiting_answer', 'evaluating_recovery');
+      if (phase !== "evaluating") return;
+      sessionLog.warn(
+        "SessionManager",
+        "evaluating-recovery: no AI audio after tool result — forcing awaiting_answer",
+        { timeout_ms: SessionManager.EVALUATING_RECOVERY_TIMEOUT_MS },
+      );
+      useSessionStore
+        .getState()
+        .transitionTo("awaiting_answer", "evaluating_recovery");
     }, SessionManager.EVALUATING_RECOVERY_TIMEOUT_MS);
   }
 
@@ -883,15 +1054,18 @@ class SessionManager {
    * listener commits early if Gemini starts pronouncing the next question.
    * Any previous pending advance is committed to ITS target first.
    */
-  private armPendingUiAdvance(nextCardFront: string, targetIndex: number): void {
+  private armPendingUiAdvance(
+    nextCardFront: string,
+    targetIndex: number,
+  ): void {
     if (this.pendingUiNextCardFront !== null) {
-      this.commitPendingUiAdvance('superseded_by_new_advance');
+      this.commitPendingUiAdvance("superseded_by_new_advance");
     }
     this.pendingUiNextCardFront = nextCardFront;
     this.pendingUiTargetIndex = targetIndex;
-    this.pendingUiTranscriptAccum = '';
+    this.pendingUiTranscriptAccum = "";
     this.pendingUiAdvanceTimer = setTimeout(() => {
-      this.commitPendingUiAdvance('timeout');
+      this.commitPendingUiAdvance("timeout");
     }, SessionManager.PENDING_UI_ADVANCE_TIMEOUT_MS);
   }
 
@@ -911,11 +1085,14 @@ class SessionManager {
     const target = this.pendingUiTargetIndex;
     this.pendingUiNextCardFront = null;
     this.pendingUiTargetIndex = null;
-    this.pendingUiTranscriptAccum = '';
+    this.pendingUiTranscriptAccum = "";
     if (target !== null) {
       useCardCacheStore.setState({ uiVisibleIndex: target });
     }
-    sessionLog.event('UI', 'card advance committed', { reason, target_index: target });
+    sessionLog.event("UI", "card advance committed", {
+      reason,
+      target_index: target,
+    });
   }
 
   /**
@@ -923,25 +1100,34 @@ class SessionManager {
    * direction (incorrect→correct or correct→incorrect). The latest write
    * to AnkiDroid drives the next due date, which is what we want.
    */
-  private async handleOverrideEvaluation(callId: string, args: any): Promise<void> {
-    const overrideTo: 'correct' | 'incorrect' = args?.override_to === 'incorrect' ? 'incorrect' : 'correct';
-    sessionLog.event('tool_call', 'override_evaluation', { override_to: overrideTo, call_id: callId });
+  private async handleOverrideEvaluation(
+    callId: string,
+    args: any,
+  ): Promise<void> {
+    const overrideTo: "correct" | "incorrect" =
+      args?.override_to === "incorrect" ? "incorrect" : "correct";
+    sessionLog.event("tool_call", "override_evaluation", {
+      override_to: overrideTo,
+      call_id: callId,
+    });
 
     const { stats } = useSessionStore.getState();
-    const canFlip = overrideTo === 'correct' ? stats.incorrect > 0 : stats.correct > 0;
+    const canFlip =
+      overrideTo === "correct" ? stats.incorrect > 0 : stats.correct > 0;
 
     if (!canFlip) {
       webrtcManager.sendToolResult(callId, {
-        status: 'no_change',
-        message: overrideTo === 'correct'
-          ? 'No incorrect answer to override'
-          : 'No correct answer to override',
+        status: "no_change",
+        message:
+          overrideTo === "correct"
+            ? "No incorrect answer to override"
+            : "No correct answer to override",
       });
       return;
     }
 
     // Adjust stats by flipping one tally from one bucket to the other.
-    if (overrideTo === 'correct') {
+    if (overrideTo === "correct") {
       useSessionStore.setState({
         stats: { correct: stats.correct + 1, incorrect: stats.incorrect - 1 },
       });
@@ -953,15 +1139,28 @@ class SessionManager {
 
     // Re-write the last answered card to AnkiDroid with the flipped grade.
     const { selectedDeck: deckForOverride } = useSettingsStore.getState();
-    if (this.lastAnsweredCardId != null && this.lastAnsweredCardOrd != null && deckForOverride) {
-      const pass = overrideTo === 'correct';
-      ankiBridge.answerCard(deckForOverride, this.lastAnsweredCardId, this.lastAnsweredCardOrd, pass).catch((err) => {
-        sessionLog.warn('AnkiDroid', 'override write-back error', { error: String(err) });
-      });
+    if (
+      this.lastAnsweredCardId != null &&
+      this.lastAnsweredCardOrd != null &&
+      deckForOverride
+    ) {
+      const pass = overrideTo === "correct";
+      ankiBridge
+        .answerCard(
+          deckForOverride,
+          this.lastAnsweredCardId,
+          this.lastAnsweredCardOrd,
+          pass,
+        )
+        .catch((err) => {
+          sessionLog.warn("AnkiDroid", "override write-back error", {
+            error: String(err),
+          });
+        });
     }
 
     webrtcManager.sendToolResult(callId, {
-      status: 'success',
+      status: "success",
       message: `Previous answer marked as ${overrideTo}`,
       updated_stats: useSessionStore.getState().stats,
     });
@@ -971,14 +1170,14 @@ class SessionManager {
    * Handle end_session tool
    */
   private async handleEndSessionTool(callId: string): Promise<void> {
-    sessionLog.event('tool_call', 'end_session', { call_id: callId });
-    sessionLog.step(8, { reason: 'user_ended' });
+    sessionLog.event("tool_call", "end_session", { call_id: callId });
+    sessionLog.step(8, { reason: "user_ended" });
 
     const stats = useSessionStore.getState().stats;
     const total = stats.correct + stats.incorrect;
 
     webrtcManager.sendToolResult(callId, {
-      status: 'ending',
+      status: "ending",
       total_reviewed: total,
       correct: stats.correct,
       incorrect: stats.incorrect,
@@ -986,7 +1185,7 @@ class SessionManager {
 
     // Trigger completion after AI gives summary
     setTimeout(async () => {
-      useSessionStore.getState().transitionTo('session_complete', 'user_ended');
+      useSessionStore.getState().transitionTo("session_complete", "user_ended");
       await this.onSessionComplete();
     }, 5000); // Wait for AI to speak summary
   }
@@ -1007,15 +1206,19 @@ class SessionManager {
     try {
       await stopForegroundService();
     } catch (error) {
-      sessionLog.warn('SessionManager', 'failed to stop foreground service', { error: String(error) });
+      sessionLog.warn("SessionManager", "failed to stop foreground service", {
+        error: String(error),
+      });
     }
 
     // Trigger AnkiDroid sync
     try {
       await ankiBridge.triggerSync();
-      sessionLog.info('AnkiDroid', 'sync triggered');
+      sessionLog.info("AnkiDroid", "sync triggered");
     } catch (error) {
-      sessionLog.warn('AnkiDroid', 'failed to trigger sync', { error: String(error) });
+      sessionLog.warn("AnkiDroid", "failed to trigger sync", {
+        error: String(error),
+      });
     }
   }
 
@@ -1034,11 +1237,11 @@ class SessionManager {
     webrtcManager.onConnectionDropped = null;
     this.phaseBeforeNetworkPause = null;
     this.clearEvaluatingRecovery();
-    this.commitPendingUiAdvance('end_from_notification');
+    this.commitPendingUiAdvance("end_from_notification");
     this.lastAnsweredCardId = null;
     this.lastAnsweredCardOrd = null;
     stopAudioLevelTracking();
-    transitionTo('session_complete', 'notification_end');
+    transitionTo("session_complete", "notification_end");
     await this.onSessionComplete();
   }
 
@@ -1063,19 +1266,21 @@ class SessionManager {
     webrtcManager.onConnectionDropped = null;
     this.phaseBeforeNetworkPause = null;
     this.clearEvaluatingRecovery();
-    this.commitPendingUiAdvance('end_session');
+    this.commitPendingUiAdvance("end_session");
     this.lastAnsweredCardId = null;
     this.lastAnsweredCardOrd = null;
 
     stopForegroundService().catch((error) => {
-      sessionLog.warn('SessionManager', 'failed to stop foreground service', { error: String(error) });
+      sessionLog.warn("SessionManager", "failed to stop foreground service", {
+        error: String(error),
+      });
     });
 
     stopAudioLevelTracking();
     clearCards();
-    transitionTo('idle', 'session_ended');
+    transitionTo("idle", "session_ended");
 
-    sessionLog.banner('Session ended (user)');
+    sessionLog.banner("Session ended (user)");
   }
 
   /**
@@ -1090,28 +1295,31 @@ class SessionManager {
    * otherwise to avoid corrupting the conversation state.
    */
   simulateUserAnswer(text: string): void {
-    const trimmed = (text ?? '').trim();
+    const trimmed = (text ?? "").trim();
     if (!trimmed) {
-      sessionLog.warn('SIM', 'simulateUserAnswer called with empty text — ignored');
+      sessionLog.warn(
+        "SIM",
+        "simulateUserAnswer called with empty text — ignored",
+      );
       return;
     }
 
     const { phase, transitionTo } = useSessionStore.getState();
-    const acceptablePhases = ['awaiting_answer', 'giving_feedback', 'ready'];
+    const acceptablePhases = ["awaiting_answer", "giving_feedback", "ready"];
     if (!acceptablePhases.includes(phase)) {
-      sessionLog.warn('SIM', 'rejected — session not in an answering phase', {
+      sessionLog.warn("SIM", "rejected — session not in an answering phase", {
         current_phase: phase,
         text: trimmed,
       });
       return;
     }
 
-    sessionLog.event('SIM', 'injecting user answer', { text: trimmed, phase });
+    sessionLog.event("SIM", "injecting user answer", { text: trimmed, phase });
 
     // Mute mic during injection so VAD can't race the text turn and
     // double-commit. Restore previous mute state on next tick.
     webrtcManager.setMicrophoneMuted(true);
-    transitionTo('evaluating', 'sim_user_answered');
+    transitionTo("evaluating", "sim_user_answered");
     // Arm recovery so a silent-no-tool reply (BUG 3 shape) can't lock the
     // session in `evaluating`. The audio.delta handler clears it on real
     // feedback; the timer forces awaiting_answer if 8 s pass silent.
@@ -1131,7 +1339,7 @@ class SessionManager {
     const { transitionTo } = useSessionStore.getState();
     webrtcManager.stopCurrentAudio(); // stop tutor speaking immediately
     webrtcManager.setMicrophoneMuted(true);
-    transitionTo('paused', 'user_paused');
+    transitionTo("paused", "user_paused");
   }
 
   /**
@@ -1143,9 +1351,11 @@ class SessionManager {
     clearAudioFocusPauseFlag();
     // Re-request audio focus in case it was lost (e.g., after a phone call)
     requestAudioFocus().catch((err) => {
-      sessionLog.warn('SessionManager', 'failed to re-request audio focus', { error: String(err) });
+      sessionLog.warn("SessionManager", "failed to re-request audio focus", {
+        error: String(err),
+      });
     });
-    transitionTo('asking_question', 'user_resumed');
+    transitionTo("asking_question", "user_resumed");
   }
 }
 
