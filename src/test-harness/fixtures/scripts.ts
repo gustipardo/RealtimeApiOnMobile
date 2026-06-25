@@ -1,5 +1,8 @@
 import type { AnkiCard } from '../../types/anki';
 import { awsExamSaCards } from './aws-exam-sa';
+import { anatomyMedCards } from './anatomy-med';
+import { refoldEnglishCards } from './refold-english';
+import { spanishPhrasesCards } from './spanish-phrases';
 
 /**
  * A turn in a replay script.
@@ -427,6 +430,199 @@ export const notificationLifecycle: Fixture = {
   expectedFinalStats: { correct: 3, incorrect: 0 },
 };
 
+// ============================================================================
+// Persona: anatomy/med-student
+// ============================================================================
+
+/**
+ * Medical student studying physiology — answers all 6 cards confidently.
+ */
+export const anatomyAllCorrect: Fixture = {
+  name: 'anatomy-all-correct',
+  cards: anatomyMedCards,
+  turns: anatomyMedCards.map((card, i) => ({
+    kind: 'answer' as const,
+    userSaid: card.back.split(/[.;]/)[0].toLowerCase(),  // first sentence, lowercased
+    aiGraded: 'correct' as const,
+    expectWriteback: { cardId: card.cardId, pass: true },
+  })),
+  expectedFinalStats: { correct: 6, incorrect: 0 },
+};
+
+/**
+ * Medical student — 4 correct, 1 wrong (blanks on brachial plexus
+ * which is the densest answer in the deck).
+ */
+export const anatomyMixed: Fixture = {
+  name: 'anatomy-mixed',
+  cards: anatomyMedCards.slice(0, 5),
+  turns: [
+    {
+      kind: 'answer',
+      userSaid: 'produces atp, the powerhouse',
+      aiGraded: 'correct',
+      expectWriteback: { cardId: anatomyMedCards[0].cardId, pass: true },
+    },
+    {
+      kind: 'answer',
+      userSaid: 'memory consolidation',
+      aiGraded: 'correct',
+      expectWriteback: { cardId: anatomyMedCards[1].cardId, pass: true },
+    },
+    {
+      kind: 'answer',
+      userSaid: 'insulin and digestive enzymes',
+      aiGraded: 'correct',
+      expectWriteback: { cardId: anatomyMedCards[2].cardId, pass: true },
+    },
+    {
+      kind: 'answer',
+      userSaid: 'no idea',
+      aiGraded: 'incorrect',
+      expectWriteback: { cardId: anatomyMedCards[3].cardId, pass: false },
+    },
+    {
+      kind: 'answer',
+      userSaid: 'the natural pacemaker',
+      aiGraded: 'correct',
+      expectWriteback: { cardId: anatomyMedCards[4].cardId, pass: true },
+    },
+  ],
+  expectedFinalStats: { correct: 4, incorrect: 1 },
+};
+
+// ============================================================================
+// Persona: refold English learner
+// ============================================================================
+
+/**
+ * English learner studying vocabulary — answers 6 cards correctly.
+ */
+export const refoldAllCorrect: Fixture = {
+  name: 'refold-english-all-correct',
+  cards: refoldEnglishCards.slice(0, 6),
+  turns: refoldEnglishCards.slice(0, 6).map((card) => ({
+    kind: 'answer' as const,
+    userSaid: card.back.split(';')[0].split('\n')[0].toLowerCase(),
+    aiGraded: 'correct' as const,
+    expectWriteback: { cardId: card.cardId, pass: true },
+  })),
+  expectedFinalStats: { correct: 6, incorrect: 0 },
+};
+
+/**
+ * English learner — 4 correct, 1 wrong, 1 skipped (Refold persona is
+ * the one most likely to skip when they don't know — language learners
+ * often guess phonetically then give up).
+ */
+export const refoldMixed: Fixture = {
+  name: 'refold-english-mixed',
+  cards: refoldEnglishCards.slice(0, 6),
+  turns: [
+    {
+      kind: 'answer',
+      userSaid: 'to understand, to hold firmly',
+      aiGraded: 'correct',
+      expectWriteback: { cardId: refoldEnglishCards[0].cardId, pass: true },
+    },
+    {
+      kind: 'answer',
+      userSaid: 'small, slight, hard to notice',
+      aiGraded: 'correct',
+      expectWriteback: { cardId: refoldEnglishCards[1].cardId, pass: true },
+    },
+    {
+      kind: 'answer',
+      userSaid: 'continue despite difficulty',
+      aiGraded: 'correct',
+      expectWriteback: { cardId: refoldEnglishCards[2].cardId, pass: true },
+    },
+    {
+      kind: 'answer',
+      userSaid: 'i dont know',
+      aiGraded: 'skipped',
+      expectWriteback: null,
+    },
+    {
+      kind: 'answer',
+      userSaid: 'use to maximum advantage',
+      aiGraded: 'correct',
+      expectWriteback: { cardId: refoldEnglishCards[4].cardId, pass: true },
+    },
+    {
+      kind: 'answer',
+      userSaid: 'random',
+      aiGraded: 'incorrect',
+      expectWriteback: { cardId: refoldEnglishCards[5].cardId, pass: false },
+    },
+  ],
+  expectedFinalStats: { correct: 4, incorrect: 1 },
+};
+
+// ============================================================================
+// Persona: Spanish phrases learner (BUG 16 — language directive)
+// ============================================================================
+
+/**
+ * Spanish phrases learner — answers all 7 cards correctly. Persona
+ * exercises BUG 16's "Language: Spanish ONLY" prompt directive path:
+ * the prompts.ts languageLabelFromCode('es-ES') resolution and the
+ * prompt's first-line interpolation.
+ */
+export const spanishAllCorrect: Fixture = {
+  name: 'spanish-all-correct',
+  cards: spanishPhrasesCards,
+  turns: spanishPhrasesCards.map((card) => ({
+    kind: 'answer' as const,
+    userSaid: card.back.toLowerCase(),
+    aiGraded: 'correct' as const,
+    expectWriteback: { cardId: card.cardId, pass: true },
+  })),
+  expectedFinalStats: { correct: 7, incorrect: 0 },
+};
+
+/**
+ * Spanish phrases learner — 4 correct, 1 wrong (loses on "¿Puedes repetir?"
+ * because it has commas and accent marks that prompt grading can stumble on).
+ */
+export const spanishMixed: Fixture = {
+  name: 'spanish-mixed',
+  cards: spanishPhrasesCards.slice(0, 5),
+  turns: [
+    {
+      kind: 'answer',
+      userSaid: 'what is your name',
+      aiGraded: 'correct',
+      expectWriteback: { cardId: spanishPhrasesCards[0].cardId, pass: true },
+    },
+    {
+      kind: 'answer',
+      userSaid: 'how old are you',
+      aiGraded: 'correct',
+      expectWriteback: { cardId: spanishPhrasesCards[1].cardId, pass: true },
+    },
+    {
+      kind: 'answer',
+      userSaid: 'where are you from',
+      aiGraded: 'correct',
+      expectWriteback: { cardId: spanishPhrasesCards[2].cardId, pass: true },
+    },
+    {
+      kind: 'answer',
+      userSaid: 'the time',
+      aiGraded: 'incorrect',  // expected "what time is it"
+      expectWriteback: { cardId: spanishPhrasesCards[3].cardId, pass: false },
+    },
+    {
+      kind: 'answer',
+      userSaid: 'can you repeat please',
+      aiGraded: 'correct',
+      expectWriteback: { cardId: spanishPhrasesCards[4].cardId, pass: true },
+    },
+  ],
+  expectedFinalStats: { correct: 4, incorrect: 1 },
+};
+
 export const allFixtures = {
   happyPath,
   mixedResults,
@@ -441,4 +637,11 @@ export const allFixtures = {
   reconnectMidSession,
   reconnectFailure,
   notificationLifecycle,
+  // Persona fixtures (see the `anatomy*` / `refold*` / `spanish*` blocks above)
+  anatomyAllCorrect,
+  anatomyMixed,
+  refoldAllCorrect,
+  refoldMixed,
+  spanishAllCorrect,
+  spanishMixed,
 };

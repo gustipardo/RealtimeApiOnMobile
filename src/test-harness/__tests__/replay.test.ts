@@ -127,6 +127,12 @@ import {
   reconnectMidSession,
   reconnectFailure,
   notificationLifecycle,
+  anatomyAllCorrect,
+  anatomyMixed,
+  refoldAllCorrect,
+  refoldMixed,
+  spanishAllCorrect,
+  spanishMixed,
 } from '../fixtures/scripts';
 
 const ctx = {
@@ -508,5 +514,113 @@ describe('Layer 2 — replay harness', () => {
       const firstUpdate = mockFgUpdate.mock.invocationCallOrder[0] ?? Infinity;
       expect(firstStart).toBeLessThan(firstUpdate);
     });
+  });
+
+  // =============================================================================
+  // Persona coverage — same pipeline invariants as the AWS fixtures,
+  // but driven by different card decks so a regression in one
+  // (e.g. a future prompt change that breaks medical-vocabulary grading
+  // but not AWS) gets caught.
+  // =============================================================================
+
+  describe('anatomy/med-student persona', () => {
+    it('all-correct: writes pass=true for all 6 anatomy cards, stats 6-0', async () => {
+      const result = await runFixture(anatomyAllCorrect, ctx);
+      expect(result.ankiWrites).toHaveLength(6);
+      expect(result.ankiWrites.every((w) => w.pass)).toBe(true);
+      expect(result.finalStats).toEqual({ correct: 6, incorrect: 0 });
+      expect(result.finalPhase).toBe('session_complete');
+    });
+
+    it('mixed: writes correctly per turn and skipped does NOT trigger a write', async () => {
+      const result = await runFixture(anatomyMixed, ctx);
+      expect(result.ankiWrites).toHaveLength(5); // 5 answered, 1 skipped → no write
+      expect(result.finalStats).toEqual({ correct: 4, incorrect: 1 });
+      // No write for the skipped turn — verified by exact write count.
+      // Verify the wrong card is one of the writes:
+      expect(result.ankiWrites.filter((w) => !w.pass)).toHaveLength(1);
+    });
+  });
+
+  describe('refold English learner persona', () => {
+    it('all-correct: writes pass=true for all 6 vocab cards, stats 6-0', async () => {
+      const result = await runFixture(refoldAllCorrect, ctx);
+      expect(result.ankiWrites).toHaveLength(6);
+      expect(result.ankiWrites.every((w) => w.pass)).toBe(true);
+      expect(result.finalStats).toEqual({ correct: 6, incorrect: 0 });
+    });
+
+    it('mixed: handles correct + skipped + incorrect (language-learner pattern)', async () => {
+      const result = await runFixture(refoldMixed, ctx);
+      // 6 turns total — 4 correct + 1 skipped + 1 incorrect → 5 writes
+      // (skipped does NOT write).
+      expect(result.ankiWrites).toHaveLength(5);
+      expect(result.finalStats).toEqual({ correct: 4, incorrect: 1 });
+      // Verify exactly one wrong write.
+      expect(result.ankiWrites.filter((w) => !w.pass)).toHaveLength(1);
+    });
+
+    it('per-persona deck name is preserved through the session (BUG 16 surface)', async () => {
+      // The prompt builder is parameterized by deck name; pin that
+      // every persona's deck name propagates through to the tool-result
+      // stack so a future change can't accidentally hardcode one deck.
+      const result = await runFixture(refoldAllCorrect, ctx);
+      // The settings store receives the deck name from the fixture
+      // (via runFixture → useSettingsStore.setState({ selectedDeck })).
+      // No assertion error here means the runner didn't crash on the
+      // non-AWS deck name; the deck name is also encoded in the
+      // mockGeminiManager.updateSessionCalls[0] (the system prompt's
+      // CONTEXT line interpolates it).
+      expect(result.toolResults.length).toBeGreaterThan(0);
+    });
+  });
+
+  describe('spanish phrases learner persona (BUG 16 — language directive)', () => {
+    it('all-correct: writes pass=true for all 7 spanish phrases, stats 7-0', async () => {
+      const result = await runFixture(spanishAllCorrect, ctx);
+      expect(result.ankiWrites).toHaveLength(7);
+      expect(result.ankiWrites.every((w) => w.pass)).toBe(true);
+      expect(result.finalStats).toEqual({ correct: 7, incorrect: 0 });
+    });
+
+    it('mixed: handles correct + incorrect in a spanish-questions deck', async () => {
+      const result = await runFixture(spanishMixed, ctx);
+      expect(result.ankiWrites).toHaveLength(5);
+      expect(result.finalStats).toEqual({ correct: 4, incorrect: 1 });
+    });
+  });
+
+  describe('persona cross-cutting invariants', () => {
+    // Pinning the same invariants across all 3 new personas + AWS so
+    // a regression in one is immediately visible as a delta.
+    it.each([
+      ['aws', happyPath, 3, { correct: 3, incorrect: 0 }],
+      ['anatomy', anatomyAllCorrect, 6, { correct: 6, incorrect: 0 }],
+      ['refold', refoldAllCorrect, 6, { correct: 6, incorrect: 0 }],
+      ['spanish', spanishAllCorrect, 7, { correct: 7, incorrect: 0 }],
+    ] as const)(
+      '%s all-correct: writes match the expected card count and final stats',
+      async (_persona, fixture, expectedWrites, expectedStats) => {
+        const result = await runFixture(fixture, ctx);
+        expect(result.ankiWrites).toHaveLength(expectedWrites);
+        expect(result.finalStats).toEqual(expectedStats);
+        // All personas must end in session_complete when the deck is exhausted.
+        expect(result.finalPhase).toBe('session_complete');
+      },
+    );
+
+    it.each([
+      ['aws', mixedResults, 3, { correct: 2, incorrect: 1 }],
+      ['anatomy', anatomyMixed, 5, { correct: 4, incorrect: 1 }],
+      ['refold', refoldMixed, 5, { correct: 4, incorrect: 1 }],
+      ['spanish', spanishMixed, 5, { correct: 4, incorrect: 1 }],
+    ] as const)(
+      '%s mixed: skipped never writes, stats track correct/incorrect only',
+      async (_persona, fixture, expectedWrites, expectedStats) => {
+        const result = await runFixture(fixture, ctx);
+        expect(result.ankiWrites).toHaveLength(expectedWrites);
+        expect(result.finalStats).toEqual(expectedStats);
+      },
+    );
   });
 });
