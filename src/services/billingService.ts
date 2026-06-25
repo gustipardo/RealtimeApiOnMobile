@@ -8,15 +8,15 @@ import {
   type Purchase,
   type PurchaseError,
   type EventSubscription,
-} from 'react-native-iap';
-import functions from '@react-native-firebase/functions';
-import { isProd } from '../config/env';
+} from "react-native-iap";
+import functions from "@react-native-firebase/functions";
+import { requiresPayment } from "../config/env";
 
-export type SubscriptionSku = 'monthly_499' | 'yearly_3999';
+export type SubscriptionSku = "monthly_499" | "yearly_3999";
 
 const SKU_MAP: Record<SubscriptionSku, string> = {
-  monthly_499: 'com.ankiconversacionales.app.monthly',
-  yearly_3999: 'com.ankiconversacionales.app.yearly',
+  monthly_499: "com.ankiconversacionales.app.monthly",
+  yearly_3999: "com.ankiconversacionales.app.yearly",
 };
 
 let purchaseUpdateSubscription: EventSubscription | null = null;
@@ -27,7 +27,7 @@ let purchaseErrorSubscription: EventSubscription | null = null;
  * Call once at app startup (prod mode only).
  */
 export async function initBilling(): Promise<void> {
-  if (!isProd()) return;
+  if (!requiresPayment()) return;
 
   await initConnection();
 
@@ -38,38 +38,44 @@ export async function initBilling(): Promise<void> {
 
       // Notify backend to update subscription status
       try {
-        const callable = functions().httpsCallable('verifyPurchase');
+        const callable = functions().httpsCallable("verifyPurchase");
         await callable({
           purchaseToken: (purchase as any).purchaseToken,
           productId: purchase.productId,
         });
       } catch (err) {
-        console.error('[Billing] Failed to verify purchase:', err);
+        console.error("[Billing] Failed to verify purchase:", err);
       }
-    }
+    },
   );
 
   purchaseErrorSubscription = purchaseErrorListener((error: PurchaseError) => {
-    console.error('[Billing] Purchase error:', error);
+    console.error("[Billing] Purchase error:", error);
   });
 }
 
 /**
  * Purchase a subscription.
  */
-export async function purchaseSubscription(sku: SubscriptionSku): Promise<void> {
+export async function purchaseSubscription(
+  sku: SubscriptionSku,
+): Promise<void> {
+  // Payment bypassed (dev): simulate an instant successful purchase so the
+  // paywall flow completes without Play Billing or a real charge.
+  if (!requiresPayment()) return;
+
   const productId = SKU_MAP[sku];
   const products = await fetchProducts({ skus: [productId] });
 
   if (!products || products.length === 0) {
-    throw new Error('Subscription product not found');
+    throw new Error("Subscription product not found");
   }
 
   const offerToken =
     (products[0] as any).subscriptionOfferDetails?.[0]?.offerToken ?? undefined;
 
   await requestPurchase({
-    type: 'subs',
+    type: "subs",
     request: {
       google: {
         skus: [productId],

@@ -1,5 +1,5 @@
-import functions from '@react-native-firebase/functions';
-import { isProd } from '../config/env';
+import functions from "@react-native-firebase/functions";
+import { requiresPayment } from "../config/env";
 
 export interface TrialStatus {
   isActive: boolean;
@@ -10,20 +10,21 @@ export interface TrialStatus {
 
 /**
  * Check the user's trial/subscription status.
- * In dev mode, always returns an active trial.
- * In prod mode, calls the cloud function to check Firestore.
+ * When payment is bypassed (dev), returns a fully-unlocked status so all
+ * subscription-gated UI behaves as if the user has access.
+ * Otherwise calls the cloud function to check Firestore.
  */
 export async function checkTrialStatus(): Promise<TrialStatus> {
-  if (!isProd()) {
+  if (!requiresPayment()) {
     return {
       isActive: true,
       daysRemaining: 99,
       sessionsRemaining: 99,
-      subscriptionActive: false,
+      subscriptionActive: true,
     };
   }
 
-  const callable = functions().httpsCallable('checkTrialStatus');
+  const callable = functions().httpsCallable("checkTrialStatus");
   const result = await callable();
   return result.data as TrialStatus;
 }
