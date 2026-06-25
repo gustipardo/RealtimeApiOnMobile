@@ -4,7 +4,9 @@
 > This file is the non-hidden entry point to the project context.
 > The full context lives in `../.claude/context/` (hidden directory — read it
 > if your tool exposes it; read this file if it doesn't).
-> Last updated: 2026-06-25 (session 11).
+> Last updated: 2026-06-25 (session 12 — on-device persona E2E run on the
+> emulator + BUG 10 skip-path fix + assert-harness honesty fixes. See
+> `SESSION_LOG_2026-06-25_session12.md`).
 
 ---
 
@@ -22,21 +24,23 @@ Author: Tobías (Gusti) Pardo — UTN Facultad Regional Delta.
 
 ## Current state (2026-06-25, end of session 11)
 
-| Layer                            | Status                                                               |
-| -------------------------------- | -------------------------------------------------------------------- |
-| Design system                    | Complete (phases 01–05, `_design/`)                                  |
-| Landing (`Web/`)                 | Deployed, bilingual ES/EN                                            |
-| App core (voice session)         | Working on Pixel 9, **426/432 Jest tests passing** (6 Layer-3 gated)  |
-| Auth (Firebase + Google Sign-In) | M0 dev-bypass shipped; M1 routing shipped; M2 paywall wiring pending |
-| Free-quota / trial               | End-to-end shipped (7d OR 10 sessions, server-authoritative)         |
-| Play Store                       | Not yet submitted; `App/PLAY-STORE.md` documents blockers            |
-| Testing infrastructure           | L1 unit + L2 replay (51 tests, 4 personas) + L3 real-Gemini (gated) |
+| Layer                            | Status                                                                                                                        |
+| -------------------------------- | ----------------------------------------------------------------------------------------------------------------------------- |
+| Design system                    | Complete (phases 01–05, `_design/`)                                                                                           |
+| Landing (`Web/`)                 | Deployed, bilingual ES/EN                                                                                                     |
+| App core (voice session)         | Working on Pixel 9 + emulator, **428/434 Jest passing** (6 L3 gated)                                                          |
+| Auth (Firebase + Google Sign-In) | M0 dev-bypass shipped; M1 routing shipped; M2 paywall wiring pending                                                          |
+| Free-quota / trial               | End-to-end shipped (7d OR 10 sessions, server-authoritative)                                                                  |
+| Play Store                       | Not yet submitted; `App/PLAY-STORE.md` documents blockers                                                                     |
+| Testing infrastructure           | L1 unit + L2 replay (51 tests, 4 personas) + L3 real-Gemini (gated) + L4 on-device scenarios **now runnable on the emulator** |
 
-**Git:** 16 commits ahead of `origin/main`, NOT YET PUSHED.
+**Git:** 19 commits ahead of `origin/main`, NOT YET PUSHED.
 
-**Detailed change log for this session:** `SESSION_LOG_2026-06-25.md` (in this
-directory). Read it before doing further work — the session was long (5
-iterations) and changed a lot of code paths + tests + debug tooling.
+**Detailed change logs (most recent first):**
+`SESSION_LOG_2026-06-25_session12.md` (on-device persona E2E + BUG 10 skip-path
+fix + assert-harness honesty fixes + the MediaStore emulator-import workaround —
+read this first) then `SESSION_LOG_2026-06-25.md` (session 11 — testing pyramid,
+4 personas). Read before doing further work.
 
 ---
 
@@ -159,12 +163,12 @@ Jest does NOT use jest-expo. Environment is `node`. Manual mocks live in
 
 ### Test pyramid (4 layers, deterministic first)
 
-| Layer | Suite(s) | What it tests | Cost |
-|---|---|---|---|
-| 1 — unit | `src/services/__tests__/sessionManager.test.ts` + 5 others | Tool-call routing, write-back contract, override flip, retry | $0 |
-| 2 — replay | `src/test-harness/__tests__/replay.test.ts` (**51 tests, 4 personas**) | Full pipeline: user transcript → AI tool call → write-back → phase → foreground service | $0 |
-| 3 — real API | `src/test-harness/__tests__/realGemini.text.test.ts` (gated, **6 tests**) | Prompt regressions, tool arg shape, AI grading drift | ~$0.05/run |
-| 4 — on-device | `scripts/test-e2e-scenario.sh` (5 scenarios) | Real Android + real AnkiDroid + real Gemini | ~$0.20/run |
+| Layer         | Suite(s)                                                                  | What it tests                                                                           | Cost       |
+| ------------- | ------------------------------------------------------------------------- | --------------------------------------------------------------------------------------- | ---------- |
+| 1 — unit      | `src/services/__tests__/sessionManager.test.ts` + 5 others                | Tool-call routing, write-back contract, override flip, retry                            | $0         |
+| 2 — replay    | `src/test-harness/__tests__/replay.test.ts` (**51 tests, 4 personas**)    | Full pipeline: user transcript → AI tool call → write-back → phase → foreground service | $0         |
+| 3 — real API  | `src/test-harness/__tests__/realGemini.text.test.ts` (gated, **6 tests**) | Prompt regressions, tool arg shape, AI grading drift                                    | ~$0.05/run |
+| 4 — on-device | `scripts/test-e2e-scenario.sh` (5 scenarios)                              | Real Android + real AnkiDroid + real Gemini                                             | ~$0.20/run |
 
 The 4 personas covered in L2 are: AWS Solutions Architect (English), Anatomy
 med-student (English), Refold English learner (vocab), Spanish phrases learner
@@ -187,21 +191,21 @@ setup may need re-validation; if L3 starts failing again, check
 All scripts live in `App/scripts/`. All source `_device.sh` (prefers physical
 Pixel 9 when multiple devices attached; override with `ANDROID_SERIAL=`).
 
-| Script                                | What it does                                       | Device needed     |
-| ------------------------------------- | -------------------------------------------------- | ----------------- |
-| `ui.sh`                               | Tap/screenshot/dump UI, toggle theme, reload       | Any               |
-| `snap.sh`                             | Quick screenshot to `_debug/snaps/`                | Any               |
-| `answer.sh <text>`                    | Inject a spoken answer via deep link (dev only)    | Any               |
-| `test-flow.sh`                        | Multi-card E2E: launch → inject 4 answers → assert | Any               |
-| `check-writeback.sh`                  | Verify AnkiDroid scheduler accepted write-back     | Any               |
-| `monitor-writeback.sh --live`         | Stream live write-back events                      | Any               |
-| `monitor-writeback.sh --instrumented` | Run WriteBackTest.kt                               | Any               |
-| `setup-test-emulator.sh`              | Boot AVD, install AnkiDroid, import test deck      | `google_apis` AVD |
-| `test-e2e-scenario.sh <scenario>`     | Full isolated E2E with assertion                   | Any               |
-| `assert-session.sh --log <file>`      | Parse log, check correct/incorrect counts          | None (offline)    |
-| `session-trace.sh`                    | **NEW** Live logcat → colored phase tracer with Δs | Any (or stdin)    |
-| `phase-timeline.sh <logfile>`         | **NEW** Offline phase timeline from saved log      | None              |
-| `dump-decks.sh [--json]`              | **NEW** AnkiDroid deck list via uiautomator (no perms) | Any          |
+| Script                                | What it does                                           | Device needed     |
+| ------------------------------------- | ------------------------------------------------------ | ----------------- |
+| `ui.sh`                               | Tap/screenshot/dump UI, toggle theme, reload           | Any               |
+| `snap.sh`                             | Quick screenshot to `_debug/snaps/`                    | Any               |
+| `answer.sh <text>`                    | Inject a spoken answer via deep link (dev only)        | Any               |
+| `test-flow.sh`                        | Multi-card E2E: launch → inject 4 answers → assert     | Any               |
+| `check-writeback.sh`                  | Verify AnkiDroid scheduler accepted write-back         | Any               |
+| `monitor-writeback.sh --live`         | Stream live write-back events                          | Any               |
+| `monitor-writeback.sh --instrumented` | Run WriteBackTest.kt                                   | Any               |
+| `setup-test-emulator.sh`              | Boot AVD, install AnkiDroid, import test deck          | `google_apis` AVD |
+| `test-e2e-scenario.sh <scenario>`     | Full isolated E2E with assertion                       | Any               |
+| `assert-session.sh --log <file>`      | Parse log, check correct/incorrect counts              | None (offline)    |
+| `session-trace.sh`                    | **NEW** Live logcat → colored phase tracer with Δs     | Any (or stdin)    |
+| `phase-timeline.sh <logfile>`         | **NEW** Offline phase timeline from saved log          | None              |
+| `dump-decks.sh [--json]`              | **NEW** AnkiDroid deck list via uiautomator (no perms) | Any               |
 
 **Interactive debugging:** `scrcpy --turn-screen-on` mirrors + mouse-controls the
 device screen from your laptop.
@@ -231,6 +235,7 @@ Four isolated test decks (completely independent of developer's personal AnkiDro
 | `anatomy-med`     | Engram Test — Anatomy         | 6     | Med student           |
 
 Generated by `scripts/create-test-apkg.py`. Three artifact kinds per persona:
+
 - `src/test-harness/fixtures/<profile>.apkg` — installable deck (used by on-device tests)
 - `src/test-harness/fixtures/<profile>.scenario.json` — scenario definition (used by `create-test-apkg.py` to regenerate the .apkg)
 - `src/test-harness/fixtures/<profile>.ts` — typed `AnkiCard[]` array (used by L2 Jest tests)
@@ -275,10 +280,17 @@ helper in the Engram app — TODO, not implemented.
 - **BUG 9** — intermittent: after a silent eval turn, recovery timer bounces
   evaluating → awaiting_answer but the user's next utterance doesn't unstick.
   No fix yet; need persistent log capture (see BUG 13 in SESSION-FLOW.md).
-- **BUG 10 variant B** — intermittent: tutor says "last card" because the
-  Promise.race 500ms cap leaves `fetchAndAppendNextCard` unresolved →
-  `peekNextCard()` returns undefined. Fix proposed: re-query `getDeckInfo()`
-  before transitioning to `session_complete`.
+- **BUG 10 variant C (skip-path)** — **FIXED 2026-06-25** (`aecd301`). A skip
+  never refilled (the write-back+refill block was guarded by
+  `quality !== "skipped"`), so the session falsely ended on the first skip. A
+  skip now writes back as "Again" (ease=1) to advance the head-only scheduler;
+  excluded from stats. Trade-off + future native-bury alternative in
+  SESSION-FLOW.md §BUG 10.
+- **BUG 10 variant B** — still open, intermittent: tutor says "last card"
+  because the Promise.race 500ms cap leaves `fetchAndAppendNextCard` unresolved
+  → `peekNextCard()` returns undefined. Fix proposed: re-query `getDeckInfo()`
+  before transitioning to `session_complete`. (Variant C's fix does NOT close
+  this — B is a race timeout, not the skip omission.)
 - **BUG 13** — first SFX chime is silent (expo-audio isLoaded race). Partially
   worked around; root fix requires porting SFX to native SoundPool.
 - **BUG 15** — Gemini WebSocket close 1011; resume-failure UX is terminal.
@@ -288,7 +300,7 @@ helper in the Engram app — TODO, not implemented.
   doesn't always propagate to `error: reconnect_failed` in tests (the L2
   runner drains the chain deterministically via microtasks + reconnect
   succeeds; failure path was added but flaky). The runner pins the
-  *intermediate* state ("reconnecting" phase was entered, reconnectCount
+  _intermediate_ state ("reconnecting" phase was entered, reconnectCount
   incremented) rather than the final error phase.
 
 All five are tracked in `App/SESSION-FLOW.md §4`. None are blockers — the
