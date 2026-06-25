@@ -1,0 +1,55 @@
+{
+  "profile": "aws-sa",
+  "deck_name": "Engram Test — AWS SA",
+  "deck_id": 1000000042,
+  "cards": [
+    {
+      "index": 0,
+      "front": "What does EC2 stand for?",
+      "back": "Elastic Compute Cloud",
+      "correct_answer_hint": "EC2 stands for Elastic Compute Cloud, it provides virtual servers"
+    },
+    {
+      "index": 1,
+      "front": "What does S3 stand for?",
+      "back": "Simple Storage Service",
+      "correct_answer_hint": "S3 is Simple Storage Service, object storage for any amount of data"
+    },
+    {
+      "index": 2,
+      "front": "What is AWS Lambda?",
+      "back": "Serverless compute — run code without managing servers",
+      "correct_answer_hint": "Lambda is serverless compute, you run code without provisioning servers"
+    },
+    {
+      "index": 3,
+      "front": "What does IAM stand for?",
+      "back": "Identity and Access Management",
+      "correct_answer_hint": "IAM stands for Identity and Access Management, it controls who can access AWS resources"
+    },
+    {
+      "index": 4,
+      "front": "What is an AWS Availability Zone?",
+      "back": "An isolated data-centre location within a region",
+      "correct_answer_hint": "An Availability Zone is an isolated data centre within a region"
+    },
+    {
+      "index": 5,
+      "front": "What is Amazon RDS?",
+      "back": "Relational Database Service — managed SQL databases",
+      "correct_answer_hint": "RDS is the Relational Database Service, it manages SQL databases for you"
+    },
+    {
+      "index": 6,
+      "front": "What is Amazon CloudFront?",
+      "back": "A CDN that caches content at edge locations globally",
+      "correct_answer_hint": "CloudFront is a content delivery network that caches content at edge locations around the world"
+    },
+    {
+      "index": 7,
+      "front": "What does VPC stand for?",
+      "back": "Virtual Private Cloud — isolated network in AWS",
+      "correct_answer_hint": "VPC is Virtual Private Cloud, your own isolated network inside AWS"
+    }
+  ]
+}

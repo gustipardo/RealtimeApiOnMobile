@@ -1,0 +1,43 @@
+{
+  "profile": "anatomy-med",
+  "deck_name": "Engram Test — Anatomy",
+  "deck_id": 1000000045,
+  "cards": [
+    {
+      "index": 0,
+      "front": "What does the mitochondria do?",
+      "back": "Produces ATP through cellular respiration — the powerhouse of the cell",
+      "correct_answer_hint": "The mitochondria produces ATP, it is the powerhouse of the cell"
+    },
+    {
+      "index": 1,
+      "front": "What is the function of the hippocampus?",
+      "back": "Memory consolidation and spatial navigation",
+      "correct_answer_hint": "The hippocampus is responsible for memory consolidation and spatial navigation"
+    },
+    {
+      "index": 2,
+      "front": "What does the pancreas secrete?",
+      "back": "Insulin and glucagon (endocrine); digestive enzymes (exocrine)",
+      "correct_answer_hint": "The pancreas secretes insulin and glucagon for blood sugar regulation, and digestive enzymes"
+    },
+    {
+      "index": 3,
+      "front": "Where is the brachial plexus located?",
+      "back": "Network of nerves from C5-T1, running through the neck and armpit",
+      "correct_answer_hint": "The brachial plexus is a network of nerves originating from C5 to T1 in the neck and armpit"
+    },
+    {
+      "index": 4,
+      "front": "What is the role of the sinoatrial node?",
+      "back": "The heart's natural pacemaker — generates the electrical impulse that starts each heartbeat",
+      "correct_answer_hint": "The sinoatrial node is the natural pacemaker of the heart, generating the electrical impulse for each heartbeat"
+    },
+    {
+      "index": 5,
+      "front": "What does the thyroid gland regulate?",
+      "back": "Metabolism, heart rate, and body temperature via T3/T4 hormones",
+      "correct_answer_hint": "The thyroid regulates metabolism, heart rate, and body temperature through T3 and T4 hormones"
+    }
+  ]
+}

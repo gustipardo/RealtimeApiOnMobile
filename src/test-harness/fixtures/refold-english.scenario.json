@@ -1,0 +1,67 @@
+{
+  "profile": "refold-english",
+  "deck_name": "Engram Test — Refold English",
+  "deck_id": 1000000043,
+  "cards": [
+    {
+      "index": 0,
+      "front": "grasp",
+      "back": "to hold firmly; to understand\nEx: She grasped the concept quickly.",
+      "correct_answer_hint": "Grasp means to hold firmly or to understand something"
+    },
+    {
+      "index": 1,
+      "front": "subtle",
+      "back": "so slight as to be hard to notice\nEx: There was a subtle difference in tone.",
+      "correct_answer_hint": "Subtle means something so slight it is difficult to notice"
+    },
+    {
+      "index": 2,
+      "front": "persist",
+      "back": "to continue doing something despite difficulty\nEx: He persisted despite the obstacles.",
+      "correct_answer_hint": "Persist means to keep going even when things are difficult"
+    },
+    {
+      "index": 3,
+      "front": "leverage",
+      "back": "to use something to maximum advantage\nEx: She leveraged her contacts to land the job.",
+      "correct_answer_hint": "Leverage means to use something to your maximum advantage"
+    },
+    {
+      "index": 4,
+      "front": "arbitrary",
+      "back": "based on random choice rather than reason\nEx: The rule seemed completely arbitrary.",
+      "correct_answer_hint": "Arbitrary means based on random choice with no clear reason"
+    },
+    {
+      "index": 5,
+      "front": "coherent",
+      "back": "logical and consistent; easy to understand\nEx: His argument was coherent and well-structured.",
+      "correct_answer_hint": "Coherent means logical and consistent, easy to follow"
+    },
+    {
+      "index": 6,
+      "front": "ambiguous",
+      "back": "having more than one possible meaning\nEx: His answer was deliberately ambiguous.",
+      "correct_answer_hint": "Ambiguous means something that can be interpreted in more than one way"
+    },
+    {
+      "index": 7,
+      "front": "concise",
+      "back": "giving a lot of information clearly in a few words\nEx: Write a concise summary.",
+      "correct_answer_hint": "Concise means expressing a lot clearly with few words"
+    },
+    {
+      "index": 8,
+      "front": "implicit",
+      "back": "implied but not directly expressed\nEx: There was an implicit agreement between them.",
+      "correct_answer_hint": "Implicit means something that is understood but not directly stated"
+    },
+    {
+      "index": 9,
+      "front": "threshold",
+      "back": "the level at which something begins or changes\nEx: We crossed the pain threshold.",
+      "correct_answer_hint": "A threshold is the point at which something begins or changes"
+    }
+  ]
+}

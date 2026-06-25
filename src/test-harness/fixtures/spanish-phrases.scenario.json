@@ -1,0 +1,49 @@
+{
+  "profile": "spanish-phrases",
+  "deck_name": "Engram Test — Spanish Phrases",
+  "deck_id": 1000000044,
+  "cards": [
+    {
+      "index": 0,
+      "front": "¿Cómo te llamas?",
+      "back": "What is your name?",
+      "correct_answer_hint": "It means what is your name"
+    },
+    {
+      "index": 1,
+      "front": "¿Cuántos años tienes?",
+      "back": "How old are you?",
+      "correct_answer_hint": "It means how old are you"
+    },
+    {
+      "index": 2,
+      "front": "¿De dónde eres?",
+      "back": "Where are you from?",
+      "correct_answer_hint": "It means where are you from"
+    },
+    {
+      "index": 3,
+      "front": "¿Qué hora es?",
+      "back": "What time is it?",
+      "correct_answer_hint": "It means what time is it"
+    },
+    {
+      "index": 4,
+      "front": "¿Puedes repetir, por favor?",
+      "back": "Can you repeat that, please?",
+      "correct_answer_hint": "It means can you please repeat that"
+    },
+    {
+      "index": 5,
+      "front": "Tengo hambre",
+      "back": "I am hungry",
+      "correct_answer_hint": "Tengo hambre means I am hungry"
+    },
+    {
+      "index": 6,
+      "front": "No entiendo",
+      "back": "I don't understand",
+      "correct_answer_hint": "No entiendo means I don't understand"
+    }
+  ]
+}
