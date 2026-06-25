@@ -151,7 +151,7 @@ const NEXT = { cardId: 11, cardOrd: 0, front: 'What is the capital of France?', 
 beforeEach(() => {
   jest.clearAllMocks();
   jest.useRealTimers();
-  useSessionStore.setState({ phase: 'studying', stats: { correct: 0, incorrect: 0 } });
+  useSessionStore.setState({ phase: 'awaiting_answer', stats: { correct: 0, incorrect: 0 } });
   useSettingsStore.setState({ selectedDeck: DECK } as any);
   // Simulate the data-layer cache: 2 cards, currentIndex starts at 0
   // (card just answered is index 0), uiVisibleIndex matches.

@@ -31,6 +31,17 @@ const STEP_TITLES: Record<number, string> = {
   8: 'Session complete (no more cards or end_session)',
 };
 
+// Sub-step labels — used for inserts between canonical steps (e.g. "1b"
+// for the trial quota gate inside step 1). Rendered verbatim in logs.
+function renderStepId(n: number | string): string {
+  return typeof n === 'number' ? String(n) : n;
+}
+
+function titleFor(n: number | string): string {
+  if (typeof n === 'number') return STEP_TITLES[n] ?? `Step ${n}`;
+  return `Step ${n}`;
+}
+
 // Indirect (computed-key) access bypasses babel-preset-expo's transform of
 // `process.env.EXPO_PUBLIC_*` literals into a require of `expo/virtual/env`
 // (which is ESM and breaks jest). Metro still inlines via env-injection at
@@ -72,25 +83,28 @@ export const sessionLog = {
   },
 
   /** Top-level milestone in the canonical flow. */
-  step(n: number, payload?: Record<string, unknown>) {
-    const title = STEP_TITLES[n] ?? `Step ${n}`;
+  step(n: number | string, payload?: Record<string, unknown>) {
+    const id = renderStepId(n);
+    const title = titleFor(n);
     console.log(
-      `\n[${ts()}] ── STEP ${n}/${TOTAL_STEPS} ─ ${title} ${'─'.repeat(Math.max(0, 60 - title.length))}` +
+      `\n[${ts()}] ── STEP ${id}/${TOTAL_STEPS} ─ ${title} ${'─'.repeat(Math.max(0, 60 - title.length))}` +
         renderPayload(payload),
     );
   },
 
   /** Result/summary of the currently active step. */
-  stepDone(n: number, payload?: Record<string, unknown>) {
-    const title = STEP_TITLES[n] ?? `Step ${n}`;
-    console.log(`[${ts()}]    OK  step ${n} (${title})${renderPayload(payload)}`);
+  stepDone(n: number | string, payload?: Record<string, unknown>) {
+    const id = renderStepId(n);
+    const title = titleFor(n);
+    console.log(`[${ts()}]    OK  step ${id} (${title})${renderPayload(payload)}`);
   },
 
   /** Step failure — printed prominently. */
-  stepFail(n: number, reason: string, payload?: Record<string, unknown>) {
-    const title = STEP_TITLES[n] ?? `Step ${n}`;
+  stepFail(n: number | string, reason: string, payload?: Record<string, unknown>) {
+    const id = renderStepId(n);
+    const title = titleFor(n);
     console.error(
-      `[${ts()}]  FAIL  step ${n} (${title}) → ${reason}${renderPayload(payload)}`,
+      `[${ts()}]  FAIL  step ${id} (${title}) → ${reason}${renderPayload(payload)}`,
     );
   },
 

@@ -19,7 +19,7 @@ const fakePlayer = () => ({
 });
 
 let createdPlayers: ReturnType<typeof fakePlayer>[] = [];
-const mockCreateAudioPlayer = jest.fn(() => {
+const mockCreateAudioPlayer: jest.Mock = jest.fn(() => {
   const p = fakePlayer();
   createdPlayers.push(p);
   return p;
@@ -27,7 +27,7 @@ const mockCreateAudioPlayer = jest.fn(() => {
 
 jest.mock('expo-audio', () => ({
   __esModule: true,
-  createAudioPlayer: (...args: any[]) => mockCreateAudioPlayer(...args),
+  createAudioPlayer: mockCreateAudioPlayer,
 }));
 
 jest.mock('../sessionDebugLogger', () => ({

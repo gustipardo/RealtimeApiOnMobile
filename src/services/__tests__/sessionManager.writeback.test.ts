@@ -149,7 +149,7 @@ const NEXT_CARD = { cardId: 11, cardOrd: 0, front: 'Q2', back: 'A2', deckName: '
 
 beforeEach(() => {
   jest.clearAllMocks();
-  useSessionStore.setState({ phase: 'studying', stats: { correct: 0, incorrect: 0 } });
+  useSessionStore.setState({ phase: 'awaiting_answer', stats: { correct: 0, incorrect: 0 } });
   useSettingsStore.setState({ selectedDeck: 'Aws Exam SA' } as any);
 
   mockGetCurrentCard.mockReturnValue(CARD);
