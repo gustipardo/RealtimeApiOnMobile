@@ -157,9 +157,13 @@ jest.mock("../../config/prompts", () => ({
 }));
 
 import { sessionManager } from "../sessionManager";
+import { updateForegroundNotification } from "../foregroundAudioService";
 import { useSessionStore } from "../../stores/useSessionStore";
 import { useSettingsStore } from "../../stores/useSettingsStore";
 import { useCardCacheStore } from "../../stores/useCardCacheStore";
+
+const mockUpdateForegroundNotification =
+  updateForegroundNotification as jest.Mock;
 
 const SAMPLE_CARD = {
   cardId: 9001,
@@ -360,6 +364,32 @@ describe("sessionManager — evaluate_and_move_next dispatch", () => {
 
     const result = mockSendToolResult.mock.calls[0][1];
     expect(result.remaining_cards).toBe(0);
+  });
+
+  // Same BUG 10 family as remaining_cards: the foreground notification's
+  // "Card X of N" total must come from totalDueAtStart, NOT getTotalCardCount()
+  // (the cache size). Under refill-from-scheduler the cache holds only the cards
+  // loaded so far, so its length == completed + 1 every turn → the notification
+  // read "Card 1 of 1, Card 2 of 2, …" instead of "Card 1 of 200".
+  it("notification total comes from totalDueAtStart, not the cache size", async () => {
+    useSessionStore.setState({
+      totalDueAtStart: 200,
+      stats: { correct: 0, incorrect: 0 },
+    });
+    // The cache size is a misleading source — make it diverge from the truth.
+    // The old buggy code read this (getTotalCardCount) → "Card 2 of 1".
+    mockGetTotalCardCount.mockReturnValue(1);
+
+    await (sessionManager as any).handleEvaluateAndMoveNext("c", {
+      user_response_quality: "correct",
+      feedback_text: "ok",
+    });
+
+    // One card just answered → now on card 2, of the 200-card deck snapshot.
+    expect(mockUpdateForegroundNotification).toHaveBeenCalledWith(
+      "Voice Study Session",
+      "Card 2 of 200",
+    );
   });
 
   it("captures lastAnsweredCardId so override can target the right card later", async () => {

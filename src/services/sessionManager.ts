@@ -5,7 +5,6 @@ import {
   getCurrentCard,
   getNextCard,
   getRemainingCardCount,
-  getTotalCardCount,
   clearCards,
   peekNextCard,
   peekRemainingAfterAdvance,
@@ -739,8 +738,12 @@ class SessionManager {
 
     sessionLog.banner("Resuming session after reconnect");
 
-    // 1. Re-configure AI session (system prompt + tools)
-    const totalCards = getTotalCardCount();
+    // 1. Re-configure AI session (system prompt + tools).
+    // Use the totalDueAtStart snapshot, NOT getTotalCardCount() (cache size) —
+    // startSession passes dueAtStart here too, and under refill-from-scheduler
+    // the cache size is meaningless as a deck total. Keeps the resumed prompt
+    // and notification count consistent with the original session.
+    const totalCards = useSessionStore.getState().totalDueAtStart;
     await this.configureAISession(selectedDeck, totalCards);
 
     // 1a. Defensive: start the foreground notification if it didn't get to run
@@ -1017,7 +1020,12 @@ class SessionManager {
       const targetIndex = useCardCacheStore.getState().currentIndex;
       this.armPendingUiAdvance(nextCard.front, targetIndex);
       this.startEvaluatingRecovery();
-      const total = getTotalCardCount();
+      // Count source MUST be totalDueAtStart, never getTotalCardCount() (the
+      // cache size). Under refill-from-scheduler (BUG 5 v3b) the cache holds
+      // only the cards loaded so far, so its length == completed + 1 every
+      // turn → the notification read "Card 1 of 1, Card 2 of 2, …". See the
+      // Tutor Utterance Contract in SESSION-FLOW.md §3a.
+      const total = useSessionStore.getState().totalDueAtStart;
       const completed = stats.correct + stats.incorrect;
       updateForegroundNotification(
         "Voice Study Session",
