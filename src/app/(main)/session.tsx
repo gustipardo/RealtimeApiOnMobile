@@ -1,13 +1,20 @@
-import { useEffect, useState, useCallback, useRef } from 'react';
-import { View, Text, Pressable, ActivityIndicator, Animated, Platform } from 'react-native';
-import { useRouter } from 'expo-router';
-import { useConnectionStore } from '../../stores/useConnectionStore';
-import { useSessionStore } from '../../stores/useSessionStore';
-import { useCardCacheStore } from '../../stores/useCardCacheStore';
-import { useSettingsStore } from '../../stores/useSettingsStore';
-import { useAudioLevelStore } from '../../stores/useAudioLevelStore';
-import { sessionManager } from '../../services/sessionManager';
-import { palette } from '../../theme/colors';
+import { useEffect, useState, useCallback, useRef } from "react";
+import {
+  View,
+  Text,
+  Pressable,
+  ActivityIndicator,
+  Animated,
+  Platform,
+} from "react-native";
+import { useRouter } from "expo-router";
+import { useConnectionStore } from "../../stores/useConnectionStore";
+import { useSessionStore } from "../../stores/useSessionStore";
+import { useCardCacheStore } from "../../stores/useCardCacheStore";
+import { useSettingsStore } from "../../stores/useSettingsStore";
+import { useAudioLevelStore } from "../../stores/useAudioLevelStore";
+import { sessionManager } from "../../services/sessionManager";
+import { palette } from "../../theme/colors";
 
 // ---------------------------------------------------------------------------
 // Local theme palette
@@ -31,15 +38,15 @@ interface Theme {
   textOnAccent: string;
   accent: string;
   accentPressed: string;
-  accentSoft: string;       // 10%-tinted accent for chip backgrounds
+  accentSoft: string; // 10%-tinted accent for chip backgrounds
   success: string;
   successText: string;
-  successSoft: string;      // 10%-tinted success for chip backgrounds
+  successSoft: string; // 10%-tinted success for chip backgrounds
   error: string;
   errorText: string;
   errorPressed: string;
-  errorSoft: string;        // 10%-tinted error for chip backgrounds
-  amberSoft: string;        // 15%-tinted amber for paused/reconnecting chips
+  errorSoft: string; // 10%-tinted error for chip backgrounds
+  amberSoft: string; // 15%-tinted amber for paused/reconnecting chips
   amberText: string;
   border: string;
   micMeterBg: string;
@@ -51,54 +58,54 @@ interface Theme {
 // the design system (e.g. `accentSoft` for tinted button backgrounds,
 // `micMeterBg`) are derived locally with the same hue family.
 const darkTheme: Theme = {
-  bgBase:         palette.navy[900],
-  bgSurface1:     palette.navy[850],
-  bgSurface2:     palette.navy[800],
-  bgSurface3:     palette.navy[700],
-  textPrimary:    palette.navy[50],
-  textSecondary:  palette.navy[200],
-  textTertiary:   palette.navy[300],
-  textOnAccent:   palette.navy[900],
-  accent:         palette.amber[500],
-  accentPressed:  palette.amber[600],
-  accentSoft:     'rgba(228, 161, 63, 0.12)',
-  success:        palette.sage[500],
-  successText:    palette.sage[300],
-  successSoft:    'rgba(107, 155, 126, 0.12)',
-  error:          palette.terracota[500],
-  errorText:      palette.terracota[300],
-  errorPressed:   palette.terracota[700],
-  errorSoft:      'rgba(198, 123, 92, 0.14)',
-  amberSoft:      'rgba(228, 161, 63, 0.15)',
-  amberText:      palette.amber[300],
-  border:         palette.navy[600],
-  micMeterBg:     palette.navy[800],
+  bgBase: palette.navy[900],
+  bgSurface1: palette.navy[850],
+  bgSurface2: palette.navy[800],
+  bgSurface3: palette.navy[700],
+  textPrimary: palette.navy[50],
+  textSecondary: palette.navy[200],
+  textTertiary: palette.navy[300],
+  textOnAccent: palette.navy[900],
+  accent: palette.amber[500],
+  accentPressed: palette.amber[600],
+  accentSoft: "rgba(228, 161, 63, 0.12)",
+  success: palette.sage[500],
+  successText: palette.sage[300],
+  successSoft: "rgba(107, 155, 126, 0.12)",
+  error: palette.terracota[500],
+  errorText: palette.terracota[300],
+  errorPressed: palette.terracota[700],
+  errorSoft: "rgba(198, 123, 92, 0.14)",
+  amberSoft: "rgba(228, 161, 63, 0.15)",
+  amberText: palette.amber[300],
+  border: palette.navy[600],
+  micMeterBg: palette.navy[800],
   micBarInactive: palette.navy[400],
 };
 
 const lightTheme: Theme = {
-  bgBase:         palette.paper[100],   // base — `bg.base` in design
-  bgSurface1:     palette.paper[200],   // surface1 — creamier than base; the design system explicitly uses paper[200] not paper[50] for surface1, which was the contrast bug landed in the first refactor
-  bgSurface2:     palette.paper[300],
-  bgSurface3:     palette.paper[400],
-  textPrimary:    palette.navy[850],
-  textSecondary:  palette.navy[600],
-  textTertiary:   palette.navy[300],
-  textOnAccent:   palette.paper[100],   // text.onAccent / onError per design
-  accent:         palette.amber[700],
-  accentPressed:  palette.amber[900],
-  accentSoft:     'rgba(184, 120, 38, 0.10)',
-  success:        palette.sage[700],
-  successText:    palette.sage[700],
-  successSoft:    'rgba(74, 123, 92, 0.10)',
-  error:          palette.terracota[700],
-  errorText:      palette.terracota[700],
-  errorPressed:   palette.terracota[700],
-  errorSoft:      'rgba(165, 90, 61, 0.10)',
-  amberSoft:      'rgba(184, 120, 38, 0.15)',
-  amberText:      palette.amber[800],
-  border:         palette.paper[500],
-  micMeterBg:     palette.paper[200],
+  bgBase: palette.paper[100], // base — `bg.base` in design
+  bgSurface1: palette.paper[200], // surface1 — creamier than base; the design system explicitly uses paper[200] not paper[50] for surface1, which was the contrast bug landed in the first refactor
+  bgSurface2: palette.paper[300],
+  bgSurface3: palette.paper[400],
+  textPrimary: palette.navy[850],
+  textSecondary: palette.navy[600],
+  textTertiary: palette.navy[300],
+  textOnAccent: palette.paper[100], // text.onAccent / onError per design
+  accent: palette.amber[700],
+  accentPressed: palette.amber[900],
+  accentSoft: "rgba(184, 120, 38, 0.10)",
+  success: palette.sage[700],
+  successText: palette.sage[700],
+  successSoft: "rgba(74, 123, 92, 0.10)",
+  error: palette.terracota[700],
+  errorText: palette.terracota[700],
+  errorPressed: palette.terracota[700],
+  errorSoft: "rgba(165, 90, 61, 0.10)",
+  amberSoft: "rgba(184, 120, 38, 0.15)",
+  amberText: palette.amber[800],
+  border: palette.paper[500],
+  micMeterBg: palette.paper[200],
   micBarInactive: palette.paper[500],
 };
 
@@ -110,7 +117,13 @@ function useTheme(): Theme {
 // ---------------------------------------------------------------------------
 // Pulsing mic indicator component
 // ---------------------------------------------------------------------------
-function PulsingIndicator({ active, color }: { active: boolean; color: string }) {
+function PulsingIndicator({
+  active,
+  color,
+}: {
+  active: boolean;
+  color: string;
+}) {
   const t = useTheme();
   const pulseAnim = useRef(new Animated.Value(1)).current;
 
@@ -118,8 +131,16 @@ function PulsingIndicator({ active, color }: { active: boolean; color: string })
     if (active) {
       const loop = Animated.loop(
         Animated.sequence([
-          Animated.timing(pulseAnim, { toValue: 1.25, duration: 800, useNativeDriver: true }),
-          Animated.timing(pulseAnim, { toValue: 1, duration: 800, useNativeDriver: true }),
+          Animated.timing(pulseAnim, {
+            toValue: 1.25,
+            duration: 800,
+            useNativeDriver: true,
+          }),
+          Animated.timing(pulseAnim, {
+            toValue: 1,
+            duration: 800,
+            useNativeDriver: true,
+          }),
         ]),
       );
       loop.start();
@@ -142,11 +163,14 @@ function PulsingIndicator({ active, color }: { active: boolean; color: string })
   const bgColor = colorHexMap[color] ?? t.accent;
 
   return (
-    <View className="items-center justify-center" style={{ width: 56, height: 56 }}>
+    <View
+      className="items-center justify-center"
+      style={{ width: 56, height: 56 }}
+    >
       {active && (
         <Animated.View
           style={{
-            position: 'absolute',
+            position: "absolute",
             height: 56,
             width: 56,
             borderRadius: 28,
@@ -160,7 +184,9 @@ function PulsingIndicator({ active, color }: { active: boolean; color: string })
         className="items-center justify-center rounded-full"
         style={{ height: 48, width: 48, backgroundColor: bgColor }}
       >
-        <Text style={{ fontSize: 20, color: t.textOnAccent }}>{getPhaseIcon(color)}</Text>
+        <Text style={{ fontSize: 20, color: t.textOnAccent }}>
+          {getPhaseIcon(color)}
+        </Text>
       </View>
     </View>
   );
@@ -168,10 +194,14 @@ function PulsingIndicator({ active, color }: { active: boolean; color: string })
 
 function getPhaseIcon(color: string): string {
   switch (color) {
-    case 'blue': return '\u{1F50A}';   // speaker
-    case 'green': return '\u{1F3A4}';  // mic
-    case 'amber': return '\u{2026}';   // ellipsis
-    default: return '\u{1F4AC}';       // speech
+    case "blue":
+      return "\u{1F50A}"; // speaker
+    case "green":
+      return "\u{1F3A4}"; // mic
+    case "amber":
+      return "\u{2026}"; // ellipsis
+    default:
+      return "\u{1F4AC}"; // speech
   }
 }
 
@@ -183,22 +213,22 @@ function ConnectionBadge() {
   const connectionState = useConnectionStore((s) => s.connectionState);
   const networkStatus = useConnectionStore((s) => s.networkStatus);
 
-  const isOnline = networkStatus === 'online';
-  const isConnected = connectionState === 'connected';
-  const isReconnecting = connectionState === 'reconnecting';
+  const isOnline = networkStatus === "online";
+  const isConnected = connectionState === "connected";
+  const isReconnecting = connectionState === "reconnecting";
 
   let dotColor = t.success;
-  let label = 'Connected';
+  let label = "Connected";
 
   if (!isOnline) {
     dotColor = t.error;
-    label = 'Offline';
+    label = "Offline";
   } else if (isReconnecting) {
     dotColor = t.accent;
-    label = 'Reconnecting...';
+    label = "Reconnecting...";
   } else if (!isConnected) {
     dotColor = t.textTertiary;
-    label = 'Disconnected';
+    label = "Disconnected";
   }
 
   return (
@@ -210,7 +240,9 @@ function ConnectionBadge() {
         className="mr-2 rounded-full"
         style={{ height: 10, width: 10, backgroundColor: dotColor }}
       />
-      <Text className="text-xs font-medium" style={{ color: t.textSecondary }}>{label}</Text>
+      <Text className="text-xs font-medium" style={{ color: t.textSecondary }}>
+        {label}
+      </Text>
     </View>
   );
 }
@@ -228,13 +260,13 @@ function AudioLevelMeter() {
 
   // Heuristics for the status label (tuned for built-in phone mics).
   // Below -55 dB is essentially silence; above -25 dB is solid speech.
-  let label = 'Silent';
-  if (!isListening || chunksReceived === 0) label = 'No mic data';
-  else if (peakDb > -25) label = 'Audio OK';
-  else if (peakDb > -45) label = 'Quiet';
+  let label = "Silent";
+  if (!isListening || chunksReceived === 0) label = "No mic data";
+  else if (peakDb > -25) label = "Audio OK";
+  else if (peakDb > -45) label = "Quiet";
 
   const activeColor = level > 0.05 ? t.success : t.error;
-  const dbDisplay = isFinite(peakDb) ? `${peakDb.toFixed(0)} dB` : '—';
+  const dbDisplay = isFinite(peakDb) ? `${peakDb.toFixed(0)} dB` : "—";
   const barCount = 12;
 
   return (
@@ -251,7 +283,7 @@ function AudioLevelMeter() {
               key={i}
               style={{
                 width: 3,
-                height: 4 + (i * 1.5),
+                height: 4 + i * 1.5,
                 marginHorizontal: 1,
                 borderRadius: 1,
                 backgroundColor: isActive ? activeColor : t.micBarInactive,
@@ -285,7 +317,10 @@ function ProgressHeader({
   return (
     <View>
       {/* Progress bar */}
-      <View className="w-full" style={{ height: 6, backgroundColor: t.bgSurface3 }}>
+      <View
+        className="w-full"
+        style={{ height: 6, backgroundColor: t.bgSurface3 }}
+      >
         <View
           style={{
             height: 6,
@@ -308,14 +343,21 @@ function ProgressHeader({
               className="mr-1.5 rounded-full"
               style={{ height: 10, width: 10, backgroundColor: t.success }}
             />
-            <Text className="text-xs font-bold" style={{ color: t.successText }}>{stats.correct}</Text>
+            <Text
+              className="text-xs font-bold"
+              style={{ color: t.successText }}
+            >
+              {stats.correct}
+            </Text>
           </View>
           <View className="flex-row items-center">
             <View
               className="mr-1.5 rounded-full"
               style={{ height: 10, width: 10, backgroundColor: t.error }}
             />
-            <Text className="text-xs font-bold" style={{ color: t.errorText }}>{stats.incorrect}</Text>
+            <Text className="text-xs font-bold" style={{ color: t.errorText }}>
+              {stats.incorrect}
+            </Text>
           </View>
         </View>
       </View>
@@ -330,7 +372,9 @@ function EvaluationBanner() {
   const t = useTheme();
   const lastEvaluation = useSessionStore((s) => s.lastEvaluation);
   const [visible, setVisible] = useState(false);
-  const [displayEval, setDisplayEval] = useState<'correct' | 'incorrect' | null>(null);
+  const [displayEval, setDisplayEval] = useState<
+    "correct" | "incorrect" | null
+  >(null);
   const slideAnim = useRef(new Animated.Value(-60)).current;
 
   useEffect(() => {
@@ -361,7 +405,7 @@ function EvaluationBanner() {
 
   if (!visible || !displayEval) return null;
 
-  const isCorrect = displayEval === 'correct';
+  const isCorrect = displayEval === "correct";
   // Banner text always reads against an accent (success/error) fill, so
   // the "on accent" color from the active theme is the right choice.
   const onAccent = t.textOnAccent;
@@ -373,16 +417,23 @@ function EvaluationBanner() {
         backgroundColor: isCorrect ? t.success : t.error,
         paddingVertical: 10,
         paddingHorizontal: 20,
-        flexDirection: 'row',
-        alignItems: 'center',
-        justifyContent: 'center',
+        flexDirection: "row",
+        alignItems: "center",
+        justifyContent: "center",
       }}
     >
-      <Text style={{ color: onAccent, fontSize: 16, fontWeight: '800', marginRight: 8 }}>
-        {isCorrect ? '✓' : '✗'}
+      <Text
+        style={{
+          color: onAccent,
+          fontSize: 16,
+          fontWeight: "800",
+          marginRight: 8,
+        }}
+      >
+        {isCorrect ? "✓" : "✗"}
       </Text>
-      <Text style={{ color: onAccent, fontSize: 16, fontWeight: '700' }}>
-        {isCorrect ? 'Correct' : 'Incorrect'}
+      <Text style={{ color: onAccent, fontSize: 16, fontWeight: "700" }}>
+        {isCorrect ? "Correct" : "Incorrect"}
       </Text>
     </Animated.View>
   );
@@ -413,7 +464,11 @@ export default function SessionScreen() {
   useEffect(() => {
     if (currentCard) {
       cardFade.setValue(0);
-      Animated.timing(cardFade, { toValue: 1, duration: 250, useNativeDriver: true }).start();
+      Animated.timing(cardFade, {
+        toValue: 1,
+        duration: 250,
+        useNativeDriver: true,
+      }).start();
     }
   }, [currentCard?.cardId]);
 
@@ -422,13 +477,17 @@ export default function SessionScreen() {
       setError(null);
       await sessionManager.startSession();
     } catch (err: any) {
-      setError(err.message || 'Failed to start session');
+      setError(err.message || "Failed to start session");
     }
   }, []);
 
   const handleEndSession = useCallback(() => {
     sessionManager.endSession();
-    router.back();
+    if (router.canGoBack()) {
+      router.back();
+    } else {
+      router.replace("/(main)/deck-select");
+    }
   }, [router]);
 
   const handleRetry = useCallback(() => {
@@ -438,12 +497,12 @@ export default function SessionScreen() {
 
   // Auto-start session on mount
   useEffect(() => {
-    if (sessionPhase === 'idle') {
+    if (sessionPhase === "idle") {
       handleStartSession();
     }
 
     return () => {
-      if (sessionPhase !== 'idle' && sessionPhase !== 'session_complete') {
+      if (sessionPhase !== "idle" && sessionPhase !== "session_complete") {
         sessionManager.endSession();
       }
     };
@@ -452,21 +511,32 @@ export default function SessionScreen() {
   // -------------------------------------------------------------------------
   // Loading states
   // -------------------------------------------------------------------------
-  if (sessionPhase === 'connecting' || sessionPhase === 'loading_cards') {
+  if (sessionPhase === "connecting" || sessionPhase === "loading_cards") {
     return (
-      <View className="flex-1 items-center justify-center px-8" style={{ backgroundColor: t.bgBase }}>
+      <View
+        className="flex-1 items-center justify-center px-8"
+        style={{ backgroundColor: t.bgBase }}
+      >
         <View
           className="mb-6 items-center justify-center rounded-full"
           style={{ height: 80, width: 80, backgroundColor: t.accentSoft }}
         >
           <ActivityIndicator size="large" color={t.accent} />
         </View>
-        <Text className="text-center text-xl font-bold" style={{ color: t.textPrimary }}>
-          {sessionPhase === 'connecting' ? 'Connecting to AI Tutor' : 'Loading Cards'}
+        <Text
+          className="text-center text-xl font-bold"
+          style={{ color: t.textPrimary }}
+        >
+          {sessionPhase === "connecting"
+            ? "Connecting to AI Tutor"
+            : "Loading Cards"}
         </Text>
-        <Text className="mt-2 text-center text-sm" style={{ color: t.textTertiary }}>
-          {sessionPhase === 'connecting'
-            ? 'Setting up your voice session...'
+        <Text
+          className="mt-2 text-center text-sm"
+          style={{ color: t.textTertiary }}
+        >
+          {sessionPhase === "connecting"
+            ? "Setting up your voice session..."
             : `Fetching cards from ${selectedDeck}...`}
         </Text>
       </View>
@@ -476,20 +546,31 @@ export default function SessionScreen() {
   // -------------------------------------------------------------------------
   // Error state
   // -------------------------------------------------------------------------
-  if (sessionPhase === 'error' || error) {
+  if (sessionPhase === "error" || error) {
     return (
-      <View className="flex-1 items-center justify-center px-8" style={{ backgroundColor: t.bgBase }}>
+      <View
+        className="flex-1 items-center justify-center px-8"
+        style={{ backgroundColor: t.bgBase }}
+      >
         <View
           className="mb-5 items-center justify-center rounded-full"
           style={{ height: 80, width: 80, backgroundColor: t.errorSoft }}
         >
-          <Text className="text-3xl font-bold" style={{ color: t.errorText }}>!</Text>
+          <Text className="text-3xl font-bold" style={{ color: t.errorText }}>
+            !
+          </Text>
         </View>
-        <Text className="mb-2 text-center text-xl font-bold" style={{ color: t.textPrimary }}>
+        <Text
+          className="mb-2 text-center text-xl font-bold"
+          style={{ color: t.textPrimary }}
+        >
           Something Went Wrong
         </Text>
-        <Text className="mb-8 text-center text-base leading-relaxed" style={{ color: t.textTertiary }}>
-          {error || 'An unexpected error occurred. Please try again.'}
+        <Text
+          className="mb-8 text-center text-base leading-relaxed"
+          style={{ color: t.textTertiary }}
+        >
+          {error || "An unexpected error occurred. Please try again."}
         </Text>
         <View className="w-full">
           <Pressable
@@ -498,7 +579,12 @@ export default function SessionScreen() {
             style={{ backgroundColor: t.accent }}
             android_ripple={{ color: t.accentPressed }}
           >
-            <Text className="text-center text-base font-bold" style={{ color: t.textOnAccent }}>Try Again</Text>
+            <Text
+              className="text-center text-base font-bold"
+              style={{ color: t.textOnAccent }}
+            >
+              Try Again
+            </Text>
           </Pressable>
           <Pressable
             onPress={handleEndSession}
@@ -518,7 +604,12 @@ export default function SessionScreen() {
             }}
             android_ripple={{ color: t.bgBase }}
           >
-            <Text className="text-center text-base font-semibold" style={{ color: t.textSecondary }}>Go Back</Text>
+            <Text
+              className="text-center text-base font-semibold"
+              style={{ color: t.textSecondary }}
+            >
+              Go Back
+            </Text>
           </Pressable>
         </View>
       </View>
@@ -528,9 +619,10 @@ export default function SessionScreen() {
   // -------------------------------------------------------------------------
   // Session complete state
   // -------------------------------------------------------------------------
-  if (sessionPhase === 'session_complete') {
+  if (sessionPhase === "session_complete") {
     const total = stats.correct + stats.incorrect;
-    const percentage = total > 0 ? Math.round((stats.correct / total) * 100) : 0;
+    const percentage =
+      total > 0 ? Math.round((stats.correct / total) * 100) : 0;
 
     return (
       <View className="flex-1 px-6 pt-20" style={{ backgroundColor: t.bgBase }}>
@@ -540,12 +632,23 @@ export default function SessionScreen() {
             className="mb-5 items-center justify-center rounded-full"
             style={{ height: 96, width: 96, backgroundColor: t.successSoft }}
           >
-            <Text className="text-center text-4xl font-bold" style={{ color: t.successText }}>{'✓'}</Text>
+            <Text
+              className="text-center text-4xl font-bold"
+              style={{ color: t.successText }}
+            >
+              {"✓"}
+            </Text>
           </View>
-          <Text className="mb-1 text-center text-2xl font-bold" style={{ color: t.textPrimary }}>
+          <Text
+            className="mb-1 text-center text-2xl font-bold"
+            style={{ color: t.textPrimary }}
+          >
             Session Complete
           </Text>
-          <Text className="mb-8 text-center text-base" style={{ color: t.textTertiary }}>
+          <Text
+            className="mb-8 text-center text-base"
+            style={{ color: t.textTertiary }}
+          >
             {selectedDeck}
           </Text>
         </View>
@@ -553,35 +656,78 @@ export default function SessionScreen() {
         {/* Stats card */}
         <View
           className="rounded-2xl p-5"
-          style={{ borderWidth: 1, borderColor: t.border, backgroundColor: t.bgSurface1 }}
+          style={{
+            borderWidth: 1,
+            borderColor: t.border,
+            backgroundColor: t.bgSurface1,
+          }}
         >
           {/* Accuracy ring placeholder */}
           <View className="mb-5 items-center">
             <View
               className="items-center justify-center rounded-full"
               style={{
-                height: 96, width: 96,
-                borderWidth: 4, borderColor: t.accent,
+                height: 96,
+                width: 96,
+                borderWidth: 4,
+                borderColor: t.accent,
                 backgroundColor: t.accentSoft,
               }}
             >
-              <Text className="text-2xl font-bold" style={{ color: t.accent }}>{percentage}%</Text>
+              <Text className="text-2xl font-bold" style={{ color: t.accent }}>
+                {percentage}%
+              </Text>
             </View>
-            <Text className="mt-2 text-sm font-medium" style={{ color: t.textTertiary }}>Accuracy</Text>
+            <Text
+              className="mt-2 text-sm font-medium"
+              style={{ color: t.textTertiary }}
+            >
+              Accuracy
+            </Text>
           </View>
 
           <View className="flex-row justify-around">
             <View className="items-center">
-              <Text className="text-2xl font-bold" style={{ color: t.textPrimary }}>{total}</Text>
-              <Text className="text-xs font-medium" style={{ color: t.textTertiary }}>Reviewed</Text>
+              <Text
+                className="text-2xl font-bold"
+                style={{ color: t.textPrimary }}
+              >
+                {total}
+              </Text>
+              <Text
+                className="text-xs font-medium"
+                style={{ color: t.textTertiary }}
+              >
+                Reviewed
+              </Text>
             </View>
             <View className="items-center">
-              <Text className="text-2xl font-bold" style={{ color: t.successText }}>{stats.correct}</Text>
-              <Text className="text-xs font-medium" style={{ color: t.successText }}>Correct</Text>
+              <Text
+                className="text-2xl font-bold"
+                style={{ color: t.successText }}
+              >
+                {stats.correct}
+              </Text>
+              <Text
+                className="text-xs font-medium"
+                style={{ color: t.successText }}
+              >
+                Correct
+              </Text>
             </View>
             <View className="items-center">
-              <Text className="text-2xl font-bold" style={{ color: t.errorText }}>{stats.incorrect}</Text>
-              <Text className="text-xs font-medium" style={{ color: t.errorText }}>Incorrect</Text>
+              <Text
+                className="text-2xl font-bold"
+                style={{ color: t.errorText }}
+              >
+                {stats.incorrect}
+              </Text>
+              <Text
+                className="text-xs font-medium"
+                style={{ color: t.errorText }}
+              >
+                Incorrect
+              </Text>
             </View>
           </View>
         </View>
@@ -594,7 +740,12 @@ export default function SessionScreen() {
             style={{ backgroundColor: t.accent }}
             android_ripple={{ color: t.accentPressed }}
           >
-            <Text className="text-center text-base font-bold" style={{ color: t.textOnAccent }}>Done</Text>
+            <Text
+              className="text-center text-base font-bold"
+              style={{ color: t.textOnAccent }}
+            >
+              Done
+            </Text>
           </Pressable>
         </View>
       </View>
@@ -604,31 +755,46 @@ export default function SessionScreen() {
   // -------------------------------------------------------------------------
   // Paused state
   // -------------------------------------------------------------------------
-  if (sessionPhase === 'paused') {
+  if (sessionPhase === "paused") {
     const total = stats.correct + stats.incorrect;
-    const isNetworkLoss = connectionState === 'reconnecting' || connectionState === 'failed';
+    const isNetworkLoss =
+      connectionState === "reconnecting" || connectionState === "failed";
 
     return (
-      <View className="flex-1 items-center justify-center px-8" style={{ backgroundColor: t.bgBase }}>
+      <View
+        className="flex-1 items-center justify-center px-8"
+        style={{ backgroundColor: t.bgBase }}
+      >
         <View
           className="mb-5 items-center justify-center rounded-full"
           style={{
-            height: 80, width: 80,
+            height: 80,
+            width: 80,
             backgroundColor: isNetworkLoss ? t.errorSoft : t.amberSoft,
           }}
         >
           {isNetworkLoss ? (
-            <Text className="text-3xl font-bold" style={{ color: t.errorText }}>{'!'}</Text>
+            <Text className="text-3xl font-bold" style={{ color: t.errorText }}>
+              {"!"}
+            </Text>
           ) : (
-            <Text className="text-3xl font-bold" style={{ color: t.amberText }}>{'| |'}</Text>
+            <Text className="text-3xl font-bold" style={{ color: t.amberText }}>
+              {"| |"}
+            </Text>
           )}
         </View>
-        <Text className="mb-1 text-center text-2xl font-bold" style={{ color: t.textPrimary }}>
-          {isNetworkLoss ? 'Connection Lost' : 'Session Paused'}
+        <Text
+          className="mb-1 text-center text-2xl font-bold"
+          style={{ color: t.textPrimary }}
+        >
+          {isNetworkLoss ? "Connection Lost" : "Session Paused"}
         </Text>
-        <Text className="mb-3 text-center text-sm" style={{ color: t.textTertiary }}>
+        <Text
+          className="mb-3 text-center text-sm"
+          style={{ color: t.textTertiary }}
+        >
           {isNetworkLoss
-            ? 'Your network connection was interrupted. The session will resume automatically when the connection is restored.'
+            ? "Your network connection was interrupted. The session will resume automatically when the connection is restored."
             : selectedDeck}
         </Text>
 
@@ -647,14 +813,24 @@ export default function SessionScreen() {
                 className="mr-1.5 rounded-full"
                 style={{ height: 12, width: 12, backgroundColor: t.success }}
               />
-              <Text className="text-sm font-semibold" style={{ color: t.textSecondary }}>{stats.correct} correct</Text>
+              <Text
+                className="text-sm font-semibold"
+                style={{ color: t.textSecondary }}
+              >
+                {stats.correct} correct
+              </Text>
             </View>
             <View className="flex-row items-center">
               <View
                 className="mr-1.5 rounded-full"
                 style={{ height: 12, width: 12, backgroundColor: t.error }}
               />
-              <Text className="text-sm font-semibold" style={{ color: t.textSecondary }}>{stats.incorrect} incorrect</Text>
+              <Text
+                className="text-sm font-semibold"
+                style={{ color: t.textSecondary }}
+              >
+                {stats.incorrect} incorrect
+              </Text>
             </View>
           </View>
         )}
@@ -667,7 +843,12 @@ export default function SessionScreen() {
               style={{ backgroundColor: t.accent }}
               android_ripple={{ color: t.accentPressed }}
             >
-              <Text className="text-center text-base font-bold" style={{ color: t.textOnAccent }}>Resume Session</Text>
+              <Text
+                className="text-center text-base font-bold"
+                style={{ color: t.textOnAccent }}
+              >
+                Resume Session
+              </Text>
             </Pressable>
           )}
           <Pressable
@@ -688,11 +869,15 @@ export default function SessionScreen() {
                     backgroundColor: t.error,
                   }
             }
-            android_ripple={{ color: isNetworkLoss ? t.bgBase : t.errorPressed }}
+            android_ripple={{
+              color: isNetworkLoss ? t.bgBase : t.errorPressed,
+            }}
           >
             <Text
               className="text-center text-base font-semibold"
-              style={{ color: isNetworkLoss ? t.textSecondary : t.textOnAccent }}
+              style={{
+                color: isNetworkLoss ? t.textSecondary : t.textOnAccent,
+              }}
             >
               End Session
             </Text>
@@ -705,19 +890,28 @@ export default function SessionScreen() {
   // -------------------------------------------------------------------------
   // Reconnecting state (overlay-style)
   // -------------------------------------------------------------------------
-  if (sessionPhase === 'reconnecting') {
+  if (sessionPhase === "reconnecting") {
     return (
-      <View className="flex-1 items-center justify-center px-8" style={{ backgroundColor: t.bgBase }}>
+      <View
+        className="flex-1 items-center justify-center px-8"
+        style={{ backgroundColor: t.bgBase }}
+      >
         <View
           className="mb-5 items-center justify-center rounded-full"
           style={{ height: 80, width: 80, backgroundColor: t.amberSoft }}
         >
           <ActivityIndicator size="large" color={t.accent} />
         </View>
-        <Text className="mb-1 text-center text-xl font-bold" style={{ color: t.textPrimary }}>
+        <Text
+          className="mb-1 text-center text-xl font-bold"
+          style={{ color: t.textPrimary }}
+        >
           Reconnecting...
         </Text>
-        <Text className="mb-8 text-center text-sm" style={{ color: t.textTertiary }}>
+        <Text
+          className="mb-8 text-center text-sm"
+          style={{ color: t.textTertiary }}
+        >
           Attempting to restore your session
         </Text>
         <Pressable
@@ -730,7 +924,12 @@ export default function SessionScreen() {
           }}
           android_ripple={{ color: t.bgBase }}
         >
-          <Text className="text-center text-sm font-semibold" style={{ color: t.textSecondary }}>Cancel</Text>
+          <Text
+            className="text-center text-sm font-semibold"
+            style={{ color: t.textSecondary }}
+          >
+            Cancel
+          </Text>
         </Pressable>
       </View>
     );
@@ -744,10 +943,17 @@ export default function SessionScreen() {
   return (
     <View className="flex-1" style={{ backgroundColor: t.bgBase }}>
       {/* Top bar */}
-      <View className="px-5 pb-3 pt-14" style={{ backgroundColor: t.bgSurface1 }}>
+      <View
+        className="px-5 pb-3 pt-14"
+        style={{ backgroundColor: t.bgSurface1 }}
+      >
         <View className="flex-row items-center justify-between">
           <View className="flex-1 mr-3">
-            <Text className="text-lg font-bold" style={{ color: t.textPrimary }} numberOfLines={1}>
+            <Text
+              className="text-lg font-bold"
+              style={{ color: t.textPrimary }}
+              numberOfLines={1}
+            >
               {selectedDeck}
             </Text>
           </View>
@@ -756,14 +962,14 @@ export default function SessionScreen() {
       </View>
 
       {/* Progress + stats strip.
-        * Denominator is the deck's true due-card count at session start
-        * (snapshotted in sessionManager.startSession). The previous
-        * denominator — `cards.length` from the in-memory cache — became
-        * useless after BUG 5 v3b: the cache now starts at 1 and grows
-        * lazily, so the bar always showed "0 / 1" (SESSION-FLOW §4.BUG 11).
-        * Fallback to cards.length if the snapshot didn't land (failed
-        * getDeckInfo call) so the UI is never blank.
-        */}
+       * Denominator is the deck's true due-card count at session start
+       * (snapshotted in sessionManager.startSession). The previous
+       * denominator — `cards.length` from the in-memory cache — became
+       * useless after BUG 5 v3b: the cache now starts at 1 and grows
+       * lazily, so the bar always showed "0 / 1" (SESSION-FLOW §4.BUG 11).
+       * Fallback to cards.length if the snapshot didn't land (failed
+       * getDeckInfo call) so the UI is never blank.
+       */}
       <ProgressHeader
         currentIndex={currentIndex}
         totalCards={totalDueAtStart > 0 ? totalDueAtStart : cards.length}
@@ -788,7 +994,7 @@ export default function SessionScreen() {
                 backgroundColor: t.bgSurface1,
                 padding: 20,
               },
-              Platform.OS === 'android' ? { elevation: 1 } : {},
+              Platform.OS === "android" ? { elevation: 1 } : {},
             ]}
           >
             <Text
@@ -810,12 +1016,18 @@ export default function SessionScreen() {
         <View className="mb-4 flex-row items-center">
           <View className="mr-4">
             <PulsingIndicator
-              active={sessionPhase === 'awaiting_answer' || sessionPhase === 'asking_question'}
+              active={
+                sessionPhase === "awaiting_answer" ||
+                sessionPhase === "asking_question"
+              }
               color={phaseVisual.color}
             />
           </View>
           <View>
-            <Text className="text-base font-bold" style={{ color: t.textPrimary }}>
+            <Text
+              className="text-base font-bold"
+              style={{ color: t.textPrimary }}
+            >
               {phaseVisual.label}
             </Text>
             <Text className="text-xs" style={{ color: t.textTertiary }}>
@@ -835,7 +1047,7 @@ export default function SessionScreen() {
         className="px-5 pb-6 pt-3"
         style={[
           { backgroundColor: t.bgSurface1 },
-          Platform.OS === 'android' ? { elevation: 2 } : {},
+          Platform.OS === "android" ? { elevation: 2 } : {},
         ]}
       >
         <View className="flex-row">
@@ -849,7 +1061,12 @@ export default function SessionScreen() {
             }}
             android_ripple={{ color: t.bgBase }}
           >
-            <Text className="text-center text-sm font-bold" style={{ color: t.textSecondary }}>Pause</Text>
+            <Text
+              className="text-center text-sm font-bold"
+              style={{ color: t.textSecondary }}
+            >
+              Pause
+            </Text>
           </Pressable>
           <Pressable
             onPress={handleEndSession}
@@ -857,7 +1074,12 @@ export default function SessionScreen() {
             style={{ backgroundColor: t.error }}
             android_ripple={{ color: t.errorPressed }}
           >
-            <Text className="text-center text-sm font-bold" style={{ color: t.textOnAccent }}>End Session</Text>
+            <Text
+              className="text-center text-sm font-bold"
+              style={{ color: t.textOnAccent }}
+            >
+              End Session
+            </Text>
           </Pressable>
         </View>
       </View>
@@ -877,19 +1099,43 @@ interface PhaseVisual {
 
 function getPhaseVisual(phase: string): PhaseVisual {
   switch (phase) {
-    case 'ready':
-      return { label: 'Getting Ready', hint: 'Session is starting...', color: 'gray' };
-    case 'asking_question':
-      return { label: 'Asking Question', hint: 'Listen carefully...', color: 'blue' };
-    case 'awaiting_answer':
-      return { label: 'Your Turn', hint: 'Speak your answer now', color: 'green' };
-    case 'evaluating':
-      return { label: 'Evaluating', hint: 'Checking your answer...', color: 'amber' };
-    case 'giving_feedback':
-      return { label: 'Feedback', hint: 'Listen to the feedback', color: 'blue' };
-    case 'advancing':
-      return { label: 'Next Card', hint: 'Moving to the next card...', color: 'gray' };
+    case "ready":
+      return {
+        label: "Getting Ready",
+        hint: "Session is starting...",
+        color: "gray",
+      };
+    case "asking_question":
+      return {
+        label: "Asking Question",
+        hint: "Listen carefully...",
+        color: "blue",
+      };
+    case "awaiting_answer":
+      return {
+        label: "Your Turn",
+        hint: "Speak your answer now",
+        color: "green",
+      };
+    case "evaluating":
+      return {
+        label: "Evaluating",
+        hint: "Checking your answer...",
+        color: "amber",
+      };
+    case "giving_feedback":
+      return {
+        label: "Feedback",
+        hint: "Listen to the feedback",
+        color: "blue",
+      };
+    case "advancing":
+      return {
+        label: "Next Card",
+        hint: "Moving to the next card...",
+        color: "gray",
+      };
     default:
-      return { label: 'Studying', hint: 'Session in progress', color: 'blue' };
+      return { label: "Studying", hint: "Session in progress", color: "blue" };
   }
 }
