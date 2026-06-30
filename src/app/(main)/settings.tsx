@@ -54,6 +54,9 @@ export default function SettingsScreen() {
   const planState = derivePlanState(trialStatus, dev);
   const isDevBuild = paymentBypassed() || authBypassed();
   const showSignOut = !authBypassed() && !!user;
+  // Auth is enforced but nobody is signed in (e.g. browsing decks signed-out
+  // and opening Account before tapping a deck). Offer a way in.
+  const showSignIn = !authBypassed() && !user;
 
   const accountInitial = (user?.displayName || user?.email || "?")
     .trim()
@@ -68,6 +71,10 @@ export default function SettingsScreen() {
   function handleSubscribe() {
     AnalyticsEvents.paywallShown("settings");
     router.push("/(main)/paywall");
+  }
+
+  function handleSignIn() {
+    router.push("/(onboarding)/sign-in");
   }
 
   async function handleManage() {
@@ -272,19 +279,35 @@ export default function SettingsScreen() {
             padding: 16,
           }}
         >
-          <PlanCardBody
-            planState={planState}
-            daysRemaining={trialStatus?.daysRemaining ?? 0}
-            sessionsRemaining={trialStatus?.sessionsRemaining ?? 0}
-            plan={trialStatus?.plan ?? null}
-            onSubscribe={handleSubscribe}
-            onManage={handleManage}
-            t={t}
-          />
+          {showSignIn ? (
+            <>
+              <PlanLabel color={t.accent}>Free trial</PlanLabel>
+              <Text style={{ fontSize: 14, color: t.text, marginBottom: 14 }}>
+                Sign in to start your 7-day free trial and study with the AI
+                voice tutor.
+              </Text>
+              <PrimaryButton
+                label="Sign in with Google"
+                onPress={handleSignIn}
+                t={t}
+              />
+            </>
+          ) : (
+            <PlanCardBody
+              planState={planState}
+              daysRemaining={trialStatus?.daysRemaining ?? 0}
+              sessionsRemaining={trialStatus?.sessionsRemaining ?? 0}
+              plan={trialStatus?.plan ?? null}
+              onSubscribe={handleSubscribe}
+              onManage={handleManage}
+              t={t}
+            />
+          )}
         </View>
 
-        {/* Billing actions (hidden in dev-bypass — no real billing) */}
-        {!dev && (
+        {/* Billing actions (hidden in dev-bypass and when signed out — no
+            real billing / no account to restore against) */}
+        {!dev && !showSignIn && (
           <Pressable
             onPress={handleRestore}
             disabled={restoring}
