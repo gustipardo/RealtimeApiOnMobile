@@ -438,7 +438,11 @@ export default function DeckSelectScreen() {
             <Pressable
               onPress={handleSync}
               disabled={syncing}
+              accessibilityLabel="Sync decks with AnkiDroid"
               style={{
+                flexDirection: "row",
+                alignItems: "center",
+                gap: 6,
                 paddingHorizontal: 12,
                 paddingVertical: 6,
                 borderRadius: 8,
@@ -449,8 +453,17 @@ export default function DeckSelectScreen() {
               {syncing ? (
                 <ActivityIndicator size="small" color={t.textSecondary} />
               ) : (
-                <Text style={{ color: t.textSecondary, fontSize: 18 }}>⟳</Text>
+                <Text style={{ color: t.textSecondary, fontSize: 16 }}>⟳</Text>
               )}
+              <Text
+                style={{
+                  color: t.textSecondary,
+                  fontSize: 13,
+                  fontWeight: "600",
+                }}
+              >
+                {syncing ? "Syncing…" : "Sync"}
+              </Text>
             </Pressable>
             {/* Account + settings. Replaces the old Dark / Sign Out buttons —
              * theme toggle, billing and sign-out all live in the settings
