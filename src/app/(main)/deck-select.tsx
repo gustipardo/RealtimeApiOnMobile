@@ -453,7 +453,7 @@ export default function DeckSelectScreen() {
               {syncing ? (
                 <ActivityIndicator size="small" color={t.textSecondary} />
               ) : (
-                <Text style={{ color: t.textSecondary, fontSize: 16 }}>⟳</Text>
+                <RefreshIcon size={17} color={t.textSecondary} />
               )}
               <Text
                 style={{
@@ -855,6 +855,32 @@ export default function DeckSelectScreen() {
 // ---------------------------------------------------------------------------
 // Deck row — matches AnkiDroid style: name left, colored counts right
 // ---------------------------------------------------------------------------
+/** Crisp circular-arrow refresh icon (Feather "rotate-cw"). Replaces the
+ *  Unicode "⟳" glyph, which rendered thin, undersized and off-center next to
+ *  the "Sync" label. Stroke weight matches the bold label. */
+function RefreshIcon({ size = 17, color }: { size?: number; color: string }) {
+  return (
+    <Svg width={size} height={size} viewBox="0 0 24 24">
+      <Path
+        fill="none"
+        stroke={color}
+        strokeWidth={2.2}
+        strokeLinecap="round"
+        strokeLinejoin="round"
+        d="M23 4v6h-6"
+      />
+      <Path
+        fill="none"
+        stroke={color}
+        strokeWidth={2.2}
+        strokeLinecap="round"
+        strokeLinejoin="round"
+        d="M20.49 15a9 9 0 1 1-2.12-9.36L23 10"
+      />
+    </Svg>
+  );
+}
+
 /** Crisp settings gear (Material "settings" outline). Replaces the Unicode
  *  "⚙" glyph, which renders as an inconsistent dingbat/emoji across devices. */
 function GearIcon({ size = 20, color }: { size?: number; color: string }) {
