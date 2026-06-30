@@ -4,9 +4,14 @@
 > This file is the non-hidden entry point to the project context.
 > The full context lives in `../.claude/context/` (hidden directory — read it
 > if your tool exposes it; read this file if it doesn't).
-> Last updated: 2026-06-25 (session 12 — on-device persona E2E run on the
-> emulator + BUG 10 skip-path fix + assert-harness honesty fixes. See
-> `SESSION_LOG_2026-06-25_session12.md`).
+> Last updated: 2026-06-29 (Account & Settings surface built + exhaustively
+> QA'd: new `(main)/settings.tsx`, plan-state/billing/theme plumbing, paywall
+> Play-compliance parity. 3 bugs fixed incl. a blocker — `purchaseSubscription`
+> was missing `type:"subs"`. Jest 475 pass / 6 skip; tsc clean; Maestro
+> `account-settings.yaml` green on device. RTL test written but blocked by a
+> jest-expo 54 winter-runtime bug (BUG-ENV-1). See
+> `SESSION_LOG_2026-06-29_account-settings.md`, `_debug/account-settings-test-plan.md`,
+> `_debug/account-settings-bugs.md`. Prior: `SESSION_LOG_2026-06-25_session12.md`.)
 
 ---
 

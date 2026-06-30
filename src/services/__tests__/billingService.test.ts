@@ -9,6 +9,7 @@
 const mockRequiresPayment = jest.fn();
 const mockFetchProducts = jest.fn();
 const mockGetAvailablePurchases = jest.fn();
+const mockRequestPurchase = jest.fn();
 const mockCallable = jest.fn();
 const mockOpenURL = jest.fn();
 
@@ -20,7 +21,7 @@ jest.mock("react-native-iap", () => ({
   __esModule: true,
   initConnection: jest.fn(),
   fetchProducts: (...a: unknown[]) => mockFetchProducts(...a),
-  requestPurchase: jest.fn(),
+  requestPurchase: (...a: unknown[]) => mockRequestPurchase(...a),
   finishTransaction: jest.fn(),
   getAvailablePurchases: (...a: unknown[]) => mockGetAvailablePurchases(...a),
   purchaseUpdatedListener: jest.fn(() => ({ remove: jest.fn() })),
@@ -51,6 +52,7 @@ import {
   getSubscriptionPrices,
   restorePurchases,
   openManageSubscriptions,
+  purchaseSubscription,
 } from "../billingService";
 
 const MONTHLY = "com.ankiconversacionales.app.monthly";
@@ -129,5 +131,68 @@ describe("billingService — production mode", () => {
     expect(mockOpenURL).toHaveBeenCalledWith(
       "https://play.google.com/store/account/subscriptions",
     );
+  });
+
+  it("openManageSubscriptions deep-links with the monthly sku", async () => {
+    await openManageSubscriptions("monthly_499");
+    expect(mockOpenURL).toHaveBeenCalledWith(
+      `https://play.google.com/store/account/subscriptions?sku=${MONTHLY}&package=com.test.app`,
+    );
+  });
+
+  it("getSubscriptionPrices handles a partial response (only one product)", async () => {
+    mockFetchProducts.mockResolvedValueOnce([
+      { id: MONTHLY, displayPrice: "$4.99" },
+    ]);
+    // Yearly missing → undefined, no crash.
+    expect(await getSubscriptionPrices()).toEqual({
+      monthly: "$4.99",
+      yearly: undefined,
+    });
+  });
+
+  it("restorePurchases skips a malformed entry (missing token) but restores a valid one", async () => {
+    mockGetAvailablePurchases.mockResolvedValueOnce([
+      { productId: MONTHLY }, // malformed: no purchaseToken → skipped
+      { productId: YEARLY, purchaseToken: "tok-ok" },
+    ]);
+    mockCallable.mockResolvedValue({ data: { status: "success" } });
+
+    expect(await restorePurchases()).toBe(true);
+    expect(mockCallable).toHaveBeenCalledTimes(1);
+    expect(mockCallable).toHaveBeenCalledWith("verifyPurchase", {
+      purchaseToken: "tok-ok",
+      productId: YEARLY,
+    });
+  });
+
+  it("restorePurchases returns false (no crash) when getAvailablePurchases rejects", async () => {
+    mockGetAvailablePurchases.mockRejectedValueOnce(new Error("iap down"));
+    const err = jest.spyOn(console, "error").mockImplementation(() => {});
+    expect(await restorePurchases()).toBe(false);
+    err.mockRestore();
+  });
+
+  it("purchaseSubscription queries Play with type:'subs'", async () => {
+    mockFetchProducts.mockResolvedValueOnce([
+      { id: YEARLY, subscriptionOfferDetails: [{ offerToken: "ot-1" }] },
+    ]);
+    mockRequestPurchase.mockResolvedValueOnce(undefined);
+
+    await purchaseSubscription("yearly_3999");
+
+    expect(mockFetchProducts).toHaveBeenCalledWith({
+      skus: [YEARLY],
+      type: "subs",
+    });
+    expect(mockRequestPurchase).toHaveBeenCalledTimes(1);
+  });
+
+  it("purchaseSubscription rejects when the product fetch is empty", async () => {
+    mockFetchProducts.mockResolvedValueOnce([]);
+    await expect(purchaseSubscription("monthly_499")).rejects.toThrow(
+      "Subscription product not found",
+    );
+    expect(mockRequestPurchase).not.toHaveBeenCalled();
   });
 });

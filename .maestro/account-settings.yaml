@@ -1,0 +1,68 @@
+# Maestro flow: Account & Settings surface.
+#
+# Covers the entry point (avatar on deck-select), the Account screen render,
+# the live Dark-mode toggle, dev-mode gating (no billing/sign-out under the
+# default dev-bypass build), and back-navigation. Saves a labeled screenshot
+# per step to _debug/screenshots/.
+#
+# Prereqs:
+#   1. Engram dev client installed + Metro running (npm start), or a release
+#      build installed. `adb reverse tcp:8081 tcp:8081` for the dev client.
+#   2. Device already past onboarding (AnkiDroid granted, decks loaded). The
+#      onboarding guard below no-ops if it's already done.
+#   3. The asserted plan-card text ("Developer access") matches the DEFAULT
+#      dev-bypass build (no AUTH_REQUIRED/PAYMENT_REQUIRED). For a real-auth /
+#      real-payment build, change that assertion to the expected plan label
+#      (Free trial / Trial ended / Engram Pro) — see _debug/account-settings-test-plan.md.
+#
+# Run:  cd App && maestro test .maestro/account-settings.yaml
+#   (or: npm run test:maestro:account  once added to package.json)
+
+appId: com.anonymous.RealtimeApiOnMobile
+---
+- launchApp:
+    clearState: false
+
+# Onboarding guards — no-op once the device is set up.
+- runFlow:
+    when:
+      visible: "Connect AnkiDroid"
+    commands:
+      - tapOn: "Connect AnkiDroid"
+      - waitForAnimationToEnd:
+          timeout: 4000
+
+# Deck-select is up (the Sync button label is a stable anchor).
+- assertVisible: "Sync"
+- takeScreenshot: _debug/screenshots/settings-mode1-01-deckselect
+
+# Entry point: the account avatar in the header.
+- tapOn:
+    id: "account-button"
+
+# Account screen.
+- assertVisible: "Account"
+- assertVisible: "Dark mode"
+- assertVisible: "Always read answer"
+- assertVisible: "Terms of Use"
+- assertVisible: "Privacy Policy"
+# Default dev build → billing is bypassed.
+- assertVisible: "Developer access"
+# Dev-mode gating: these must NOT be present under the bypass build.
+- assertNotVisible: "Restore purchases"
+- assertNotVisible: "Sign out"
+- takeScreenshot: _debug/screenshots/settings-mode1-02-account
+
+# Live Dark-mode toggle (id because the Switch has no text).
+- tapOn:
+    id: "toggle-dark"
+- assertVisible: "Dark mode"
+- takeScreenshot: _debug/screenshots/settings-mode1-03-dark
+# Restore light.
+- tapOn:
+    id: "toggle-dark"
+
+# Back navigation returns to deck-select.
+- tapOn: "Back"
+- assertVisible: "Sync"
+- takeScreenshot: _debug/screenshots/settings-mode1-04-back

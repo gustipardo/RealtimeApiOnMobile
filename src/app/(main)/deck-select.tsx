@@ -470,6 +470,7 @@ export default function DeckSelectScreen() {
              * screen now. Shown in every mode (the screen handles signed-out /
              * dev states). */}
             <Pressable
+              testID="account-button"
               onPress={() => router.push("/(main)/settings")}
               android_ripple={{
                 color: t.pressHighlight,

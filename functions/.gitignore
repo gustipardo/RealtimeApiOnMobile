@@ -1,0 +1,5 @@
+# Compiled output (tsc outDir)
+lib/
+
+# Dependencies
+node_modules/

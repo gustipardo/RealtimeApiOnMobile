@@ -35,5 +35,8 @@ module.exports = {
     "^react-native$": "<rootDir>/__mocks__/react-native.js",
   },
   testMatch: ["**/__tests__/**/*.test.[jt]s?(x)"],
+  // RTL component tests run under jest-expo (jest.config.rtl.js), not this
+  // node-env config which stubs react-native. Keep them out of `npm test`.
+  testPathIgnorePatterns: ["/node_modules/", "\\.rtl\\.test\\.tsx$"],
   setupFiles: ["<rootDir>/jest.setup.js"],
 };

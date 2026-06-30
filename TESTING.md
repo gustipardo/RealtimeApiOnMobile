@@ -41,8 +41,14 @@ TEST_REAL_GEMINI=1 GEMINI_API_KEY=... npx jest realGemini.text
 # Layer 5 (real AnkiDroid on emulator, ~1 minute):
 npm run test:instrumented   # boots Pixel_9_Automatic if needed
 
-# Layer 6 (full UI flow on emulator, requires Engram APK installed):
-npm run test:maestro
+# Layer 6 (full UI flow on device/emulator, requires Engram APK installed):
+npm run test:maestro            # session deck-isolation (scaffold)
+npm run test:maestro:account    # Account & Settings screen
+
+# Layer 6b — RTL component render tests (jest-expo, separate config):
+npm run test:rtl
+#   ⚠ Currently blocked by an Expo SDK 54 jest "winter" runtime issue —
+#   see _debug/account-settings-bugs.md BUG-ENV-1. Kept out of `npm test`.
 
 # Everything but Maestro (the cheapest 95% of coverage):
 npm run test:all
@@ -62,6 +68,7 @@ write), the override flip (correct ↔ incorrect), retry behavior, and
 tool-call routing.
 
 **Files:**
+
 - `src/services/__tests__/sessionManager.test.ts`
 - `src/native/__tests__/ankiBridge.test.ts`
 - `src/services/__tests__/audioLevelTracker.test.ts` — RMS math
@@ -85,6 +92,7 @@ for AnkiDroid. Captures every `ankiBridge.answerCard(...)` call so
 tests can assert the entire write-back history.
 
 **Files:**
+
 - `src/test-harness/mockGeminiManager.ts`
 - `src/test-harness/deckSimulator.ts`
 - `src/test-harness/scriptRunner.ts`
@@ -96,13 +104,13 @@ tests can assert the entire write-back history.
 
 ```ts
 export const happyPath: Fixture = {
-  name: 'happy-path-all-correct',
+  name: "happy-path-all-correct",
   cards: awsExamSaCards.slice(0, 3),
   turns: [
     {
-      kind: 'answer',
-      userSaid: 'subnet level',
-      aiGraded: 'correct',
+      kind: "answer",
+      userSaid: "subnet level",
+      aiGraded: "correct",
       expectWriteback: { cardId: 1001, pass: true },
     },
     // …
@@ -112,6 +120,7 @@ export const happyPath: Fixture = {
 ```
 
 Five turn kinds:
+
 - `answer` — user replies, AI grades via `evaluate_and_move_next`. Emits
   the production two-turn shape: silent tool-call turn (response.done with
   no audio, intentionally skipped), then speaking turn (audio.delta then
@@ -159,6 +168,7 @@ prompt-quality regressions and tool-call decisions without needing
 audio at all.
 
 **Files:**
+
 - `src/test-harness/realGeminiTextRunner.ts` — the runner
 - `src/test-harness/__tests__/realGemini.text.test.ts` — gated suite
 
@@ -187,6 +197,7 @@ PCM at the same cadence as the real native pipeline. Real Gemini, real
 audio path, but reproducible — same WAV in, same chunks out.
 
 **Files:**
+
 - `src/services/micSource.ts` — abstraction layer
 - `src/test-harness/fakeMicSource.ts` — file-streaming impl
 - `src/test-harness/bootstrap.ts` — `installTestHarness()` switches
@@ -204,7 +215,7 @@ Or set in `app.config.js` extras for a build profile.
 **Loading a clip:**
 
 ```ts
-import { loadPcmFixture } from 'src/test-harness/fakeMicSource';
+import { loadPcmFixture } from "src/test-harness/fakeMicSource";
 
 // PCM must be int16 LE, 16 kHz mono, matching what Gemini Live expects.
 loadPcmFixture(myPcmBytes, { loop: false });
@@ -213,18 +224,19 @@ loadPcmFixture(myPcmBytes, { loop: false });
 **Generating PCM for self-tests** without a real WAV:
 
 ```ts
-import { generateSyntheticPcm } from 'src/test-harness/fakeMicSource';
+import { generateSyntheticPcm } from "src/test-harness/fakeMicSource";
 
 const pcm = generateSyntheticPcm({
   durationSec: 1.5,
   sampleRate: 16000,
-  amplitude: 0.3,    // 0..1
-  frequency: 800,    // Hz; 0 for DC
+  amplitude: 0.3, // 0..1
+  frequency: 800, // Hz; 0 for DC
 });
 loadPcmFixture(pcm);
 ```
 
 **Recording real WAVs to use:**
+
 1. Record yourself answering the fixture cards (any recorder app).
 2. Convert to 16 kHz mono 16-bit PCM:
    ```bash
@@ -251,6 +263,7 @@ backed by **real RMS amplitude** computed from each PCM chunk
 moved).
 
 When something feels wrong:
+
 1. Speak loudly. The meter should hit "Audio OK" within ~500 ms.
 2. If it stays at "No mic data" — the mic pipeline isn't delivering
    chunks at all. Check permissions / `expo-foreground-audio` init.
@@ -275,26 +288,50 @@ Layer 3  Real Gemini text             gated (1 test)
 Layer 4a Audio injection harness      bootstrap + helpers
 Layer 5  Kotlin instrumented           5 tests (deck isolation, deck
                                      name lookup, notes-URI bug doc)
-Layer 6  Maestro flows                 1 flow scaffold (deck isolation
-                                     at full-app level)
+Layer 6  Maestro flows                 2 flows (deck isolation scaffold;
+                                     account-settings — green on device)
+Layer 6b RTL component render          settings.rtl.test.tsx (written;
+                                     blocked by jest-expo winter, BUG-ENV-1)
 ```
+
+## Layer 6b — RTL component render tests (jest-expo)
+
+React Native Testing Library renders real screens (react-test-renderer) to
+assert per-state UI and interactions — e.g. the Account screen's plan card
+across all five `PlanState` branches, the Dark toggle, Restore, Sign-out
+confirm, Manage deep-link, Subscribe routing.
+
+- Config: `jest.config.rtl.js` (preset `jest-expo`), test files `*.rtl.test.tsx`,
+  kept out of `npm test` via `testPathIgnorePatterns`. Run with `npm run test:rtl`.
+- Deps: `@testing-library/react-native`, `test-renderer` (RTL 14's renderer
+  for React 19 — **not** `react-test-renderer`).
+- NativeWind's css-interop jsx-runtime is remapped to React's in the RTL config
+  (the screens use inline styles, so nothing is lost).
+- **Status:** the one test (`src/__tests__/settings.rtl.test.tsx`) is written but
+  blocked on an Expo SDK 54 winter-runtime issue under the jest sandbox. See
+  `_debug/account-settings-bugs.md` BUG-ENV-1 for the repro and two fixes to try.
+  Until then, plan-state branch correctness is covered by
+  `src/utils/__tests__/planState.test.ts` + the Maestro flow + on-device.
+
+**When to add a Layer 6b test:** a new screen with conditional rendering whose
+branches are hard to reach on-device (e.g. server-gated states).
 
 Total deterministic JS: **115 tests** across 9 suites.
 Total instrumented: **5 tests** on emulator.
 
 ## Bug classes the harness pins
 
-| Symptom | Catchment |
-|---|---|
-| AI verbalises a verdict, no popup / no advance / no write | Layer 2 `silentGrade` family |
-| AI tool-calls correctly, then UI stuck (no advance) | Layer 2 `toolCallNoAudio` characterization |
-| Phase desync between sessionManager and UI store | Layer 2 phase + advance invariants |
-| `lastEvaluation` popup state corrupted | Layer 2 invariant on `lastEvaluationAfter` |
-| Re-introduction of in-tool-handler `getDueCards` re-query (race) | Layer 1 sessionManager test "no re-query" guard |
-| **AnkiDroid ContentProvider quirks (cross-deck leak in `getDueCards`)** | **Layer 5 `GetDueCardsTest` — runs against real AnkiDroid** |
-| UI rendering `session.tsx` doesn't react to store changes | NOT covered — needs `@testing-library/react-native` |
-| Real AI prompt regressions / "AI verbalises but doesn't tool-call" | Partially covered (Layer 3, only 1 fixture today) |
-| Full UI → bridge → AnkiDroid integration (deck name passed correctly etc.) | Layer 6 Maestro flow (scaffold; needs Engram APK first) |
+| Symptom                                                                    | Catchment                                                   |
+| -------------------------------------------------------------------------- | ----------------------------------------------------------- |
+| AI verbalises a verdict, no popup / no advance / no write                  | Layer 2 `silentGrade` family                                |
+| AI tool-calls correctly, then UI stuck (no advance)                        | Layer 2 `toolCallNoAudio` characterization                  |
+| Phase desync between sessionManager and UI store                           | Layer 2 phase + advance invariants                          |
+| `lastEvaluation` popup state corrupted                                     | Layer 2 invariant on `lastEvaluationAfter`                  |
+| Re-introduction of in-tool-handler `getDueCards` re-query (race)           | Layer 1 sessionManager test "no re-query" guard             |
+| **AnkiDroid ContentProvider quirks (cross-deck leak in `getDueCards`)**    | **Layer 5 `GetDueCardsTest` — runs against real AnkiDroid** |
+| UI rendering `session.tsx` doesn't react to store changes                  | NOT covered — needs `@testing-library/react-native`         |
+| Real AI prompt regressions / "AI verbalises but doesn't tool-call"         | Partially covered (Layer 3, only 1 fixture today)           |
+| Full UI → bridge → AnkiDroid integration (deck name passed correctly etc.) | Layer 6 Maestro flow (scaffold; needs Engram APK first)     |
 
 ---
 
@@ -308,6 +345,7 @@ Kotlin code AND quirks of the AnkiDroid ContentProvider that no
 JS-layer test can see.
 
 **Files:**
+
 - `modules/anki-droid/android/src/main/.../AnkiDroidQueries.kt` —
   the extracted production logic, called from both `AnkiDroidModule`'s
   AsyncFunctions and the test.
@@ -325,6 +363,7 @@ JS-layer test can see.
   if no device is attached, waits for boot complete, runs Gradle.
 
 **Tests in `GetDueCardsTest`:**
+
 - `queryDueCards_returnsOnlyTheRequestedDeck` — assertion on note IDs,
   not `deckName` (which is just the input echoed back).
 - `queryDueCards_querySymmetric_otherDeckAlsoIsolated` — same in reverse,
@@ -343,6 +382,7 @@ npm run test:instrumented
 ```
 
 **Prereqs (one-time):**
+
 1. Android SDK with `emulator` + `adb` in `$ANDROID_HOME`.
 2. AVD named `Pixel_9_Automatic` (or set `ENGRAM_TEST_AVD=<name>`).
 3. AnkiDroid 2.24+ installed on the AVD:
@@ -374,6 +414,7 @@ e.g. UI passes the wrong deck name to the bridge, or `session.tsx`
 doesn't render the cards the bridge returned.
 
 **Files:**
+
 - `.maestro/session-deck-isolation.yaml` — the deck-isolation flow.
 - `.maestro/scripts/assert-deck-isolation.js` — `runScript` helper that
   parses logcat and asserts on the bridge's actual call.
