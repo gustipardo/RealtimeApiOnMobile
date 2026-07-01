@@ -29,19 +29,18 @@ import { derivePlanState } from "../../utils/planState";
 import { appTheme, type Theme } from "../../theme/appTheme";
 import { TERMS_URL, PRIVACY_URL, SUPPORT_EMAIL } from "../../config/links";
 
-// Mirror of the server trial knobs (functions/src/index.ts) — used only to
-// draw the "remaining out of total" meters. If the server numbers change,
-// update these too (they're cosmetic; the server stays the source of truth).
+// Mirror of the server trial knob (functions/src/index.ts) — used only to
+// draw the "remaining out of total" days meter. If the server number changes,
+// update this too (it's cosmetic; the server stays the source of truth).
+// Sessions are tracked server-side for gating but intentionally NOT shown to
+// users on this screen (see `I will not show sessions limitations to users`).
 const TRIAL_DAYS = 7;
-const TRIAL_MAX_SESSIONS = 10;
 
 export default function SettingsScreen() {
   const router = useRouter();
 
   const darkMode = useSettingsStore((s) => s.darkMode);
   const toggleDarkMode = useSettingsStore((s) => s.toggleDarkMode);
-  const alwaysReadBack = useSettingsStore((s) => s.alwaysReadBack);
-  const setAlwaysReadBack = useSettingsStore((s) => s.setAlwaysReadBack);
 
   const trialStatus = useTrialStore((s) => s.status);
   const trialError = useTrialStore((s) => s.error);
@@ -328,7 +327,6 @@ export default function SettingsScreen() {
             <PlanCardBody
               planState={planState}
               daysRemaining={trialStatus?.daysRemaining ?? 0}
-              sessionsRemaining={trialStatus?.sessionsRemaining ?? 0}
               plan={trialStatus?.plan ?? null}
               onSubscribe={handleSubscribe}
               onManage={handleManage}
@@ -387,18 +385,6 @@ export default function SettingsScreen() {
             onValueChange={() => {
               toggleDarkMode();
               AnalyticsEvents.settingsChanged("dark_mode", !darkMode);
-            }}
-            t={t}
-          />
-          <Divider t={t} />
-          <ToggleRow
-            testID="toggle-readback"
-            title="Always read answer"
-            subtitle="Read the back of the card after every answer"
-            value={alwaysReadBack}
-            onValueChange={(v) => {
-              setAlwaysReadBack(v);
-              AnalyticsEvents.settingsChanged("always_read_back", v);
             }}
             t={t}
           />
@@ -471,7 +457,6 @@ export default function SettingsScreen() {
 function PlanCardBody({
   planState,
   daysRemaining,
-  sessionsRemaining,
   plan,
   onSubscribe,
   onManage,
@@ -479,7 +464,6 @@ function PlanCardBody({
 }: {
   planState: ReturnType<typeof derivePlanState>;
   daysRemaining: number;
-  sessionsRemaining: number;
   plan: "monthly" | "yearly" | null;
   onSubscribe: () => void;
   onManage: () => void;
@@ -564,17 +548,9 @@ function PlanCardBody({
     <>
       <PlanLabel color={t.accent}>Free trial</PlanLabel>
       <Text style={{ fontSize: 14, color: t.text, marginBottom: 12 }}>
-        {daysRemaining} day{daysRemaining === 1 ? "" : "s"} ·{" "}
-        {sessionsRemaining} session{sessionsRemaining === 1 ? "" : "s"} left
+        {daysRemaining} day{daysRemaining === 1 ? "" : "s"} left
       </Text>
       <Meter label="Days" remaining={daysRemaining} total={TRIAL_DAYS} t={t} />
-      <View style={{ height: 8 }} />
-      <Meter
-        label="Sessions"
-        remaining={sessionsRemaining}
-        total={TRIAL_MAX_SESSIONS}
-        t={t}
-      />
       <View style={{ height: 16 }} />
       <PrimaryButton label="Subscribe" onPress={onSubscribe} t={t} />
     </>

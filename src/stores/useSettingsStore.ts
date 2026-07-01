@@ -5,8 +5,12 @@ import AsyncStorage from "@react-native-async-storage/async-storage";
 export interface SettingsStore {
   selectedDeck: string | null;
   onboardingCompleted: boolean;
-  alwaysReadBack: boolean;
   darkMode: boolean;
+  // "Always read the back aloud after every answer", per deck. Decks without
+  // an entry fall back to false (read-back on incorrect answers only). Stored
+  // per-deck because the right behavior depends on the deck: cloze/recall decks
+  // want it off, while explanation-heavy decks want the back read every time.
+  deckReadBack: Record<string, boolean>;
   deckInstructions: Record<string, string>;
   // BCP-47 language code per deck (e.g. 'en-US', 'es-ES', 'fr-FR').
   // Drives both the system prompt's "Language: X ONLY" line and
@@ -15,7 +19,7 @@ export interface SettingsStore {
   deckLanguages: Record<string, string>;
   setSelectedDeck: (deck: string | null) => void;
   setOnboardingCompleted: (completed: boolean) => void;
-  setAlwaysReadBack: (value: boolean) => void;
+  setDeckReadBack: (deckName: string, value: boolean) => void;
   toggleDarkMode: () => void;
   setDeckInstructions: (deckName: string, instructions: string) => void;
   setDeckLanguage: (deckName: string, languageCode: string) => void;
@@ -28,15 +32,28 @@ export const useSettingsStore = create(
     (set) => ({
       selectedDeck: null,
       onboardingCompleted: false,
-      alwaysReadBack: false,
       darkMode: false,
+      deckReadBack: {},
       deckInstructions: {},
       deckLanguages: {},
 
       setSelectedDeck: (selectedDeck) => set({ selectedDeck }),
       setOnboardingCompleted: (onboardingCompleted) =>
         set({ onboardingCompleted }),
-      setAlwaysReadBack: (alwaysReadBack) => set({ alwaysReadBack }),
+      setDeckReadBack: (deckName, value) =>
+        set((state) => {
+          // Only persist the non-default (true) state. false → drop the entry
+          // so the deck falls back to the default rather than storing a
+          // redundant explicit `false`. Mirrors deckLanguages/deckInstructions.
+          if (value) {
+            return {
+              deckReadBack: { ...state.deckReadBack, [deckName]: true },
+            };
+          }
+          const next = { ...state.deckReadBack };
+          delete next[deckName];
+          return { deckReadBack: next };
+        }),
       toggleDarkMode: () => set((state) => ({ darkMode: !state.darkMode })),
       setDeckInstructions: (deckName, instructions) =>
         set((state) => {

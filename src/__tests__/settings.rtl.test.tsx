@@ -33,7 +33,6 @@ let authUser: any = {
 };
 let darkMode = false;
 const toggleDarkMode = jest.fn(() => (darkMode = !darkMode));
-const setAlwaysReadBack = jest.fn();
 const refreshTrial = jest.fn(() => Promise.resolve());
 
 const env = {
@@ -85,8 +84,7 @@ jest.mock("../stores/useAuthStore", () => ({
   useAuthStore: (sel: any) => sel({ user: authUser }),
 }));
 jest.mock("../stores/useSettingsStore", () => ({
-  useSettingsStore: (sel: any) =>
-    sel({ darkMode, toggleDarkMode, alwaysReadBack: false, setAlwaysReadBack }),
+  useSettingsStore: (sel: any) => sel({ darkMode, toggleDarkMode }),
 }));
 
 import SettingsScreen from "../app/(main)/settings";

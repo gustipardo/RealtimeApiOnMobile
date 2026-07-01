@@ -409,8 +409,11 @@ class SessionManager {
     deckName: string,
     cardCount: number,
   ): Promise<void> {
-    const { alwaysReadBack, deckInstructions, deckLanguages } =
+    const { deckReadBack, deckInstructions, deckLanguages } =
       useSettingsStore.getState();
+    // Read-back is a per-deck setting (configured in the deck-settings sheet).
+    // Decks without an entry fall back to false (read-back on incorrect only).
+    const alwaysReadBack = deckReadBack[deckName] ?? false;
     const customInstructions = deckInstructions[deckName] || undefined;
     // Per-deck language: drives both the system prompt's "Language: X ONLY"
     // line and Gemini Live's speechConfig.languageCode (TTS voice + tighter

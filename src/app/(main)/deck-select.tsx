@@ -14,7 +14,7 @@ import {
   StatusBar,
   Modal,
   TextInput,
-  KeyboardAvoidingView,
+  Keyboard,
 } from "react-native";
 import { useRouter, useFocusEffect } from "expo-router";
 import Svg, { Path } from "react-native-svg";
@@ -59,9 +59,9 @@ type LoadingState = "loading" | "loaded" | "error" | "empty";
 export default function DeckSelectScreen() {
   const router = useRouter();
   const setSelectedDeck = useSettingsStore((s) => s.setSelectedDeck);
-  const alwaysReadBack = useSettingsStore((s) => s.alwaysReadBack);
-  const setAlwaysReadBack = useSettingsStore((s) => s.setAlwaysReadBack);
   const darkMode = useSettingsStore((s) => s.darkMode);
+  const deckReadBack = useSettingsStore((s) => s.deckReadBack);
+  const setDeckReadBack = useSettingsStore((s) => s.setDeckReadBack);
   const deckInstructions = useSettingsStore((s) => s.deckInstructions);
   const setDeckInstructions = useSettingsStore((s) => s.setDeckInstructions);
   const deckLanguages = useSettingsStore((s) => s.deckLanguages);
@@ -91,7 +91,28 @@ export default function DeckSelectScreen() {
     deckName: string;
     instructions: string;
     language: string;
+    readBack: boolean;
   } | null>(null);
+  // Manual keyboard tracking for the deck-settings sheet, instead of
+  // KeyboardAvoidingView: on Android, KeyboardAvoidingView nested inside a
+  // Modal computes its offset against the wrong window and gets stuck
+  // mid-height when the keyboard hides (leaves a gap at the bottom of the
+  // sheet). Tracking height directly and forcing it to 0 on
+  // keyboardDidHide resets it reliably.
+  const [keyboardOffset, setKeyboardOffset] = useState(0);
+
+  useEffect(() => {
+    const showSub = Keyboard.addListener("keyboardDidShow", (e) => {
+      setKeyboardOffset(e.endCoordinates.height);
+    });
+    const hideSub = Keyboard.addListener("keyboardDidHide", () => {
+      setKeyboardOffset(0);
+    });
+    return () => {
+      showSub.remove();
+      hideSub.remove();
+    };
+  }, []);
 
   const openDeckSettings = useCallback(
     (deckName: string) => {
@@ -99,9 +120,10 @@ export default function DeckSelectScreen() {
         deckName,
         instructions: deckInstructions[deckName] || "",
         language: deckLanguages[deckName] || DEFAULT_DECK_LANGUAGE,
+        readBack: deckReadBack[deckName] ?? false,
       });
     },
-    [deckInstructions, deckLanguages],
+    [deckInstructions, deckLanguages, deckReadBack],
   );
 
   const t = darkMode ? darkTheme : lightTheme;
@@ -422,18 +444,7 @@ export default function DeckSelectScreen() {
             justifyContent: "space-between",
           }}
         >
-          <View>
-            <EngramWordmark
-              width={120}
-              color={t.accent}
-              style={{ marginBottom: 2 }}
-            />
-            <Text
-              style={{ fontSize: 13, color: t.textSecondary, marginTop: 2 }}
-            >
-              {totalDue > 0 ? `${totalDue} cards due` : `${decks.length} decks`}
-            </Text>
-          </View>
+          <EngramWordmark width={120} color={t.accent} />
           <View style={{ flexDirection: "row", alignItems: "center", gap: 8 }}>
             <Pressable
               onPress={handleSync}
@@ -496,6 +507,11 @@ export default function DeckSelectScreen() {
             </Pressable>
           </View>
         </View>
+        <Text
+          style={{ fontSize: 13, color: t.textSecondary, marginTop: 6 }}
+        >
+          {totalDue > 0 ? `${totalDue} cards due` : `${decks.length} decks`}
+        </Text>
       </View>
 
       {/* Trial status banner — taps through to the account/plan screen. */}
@@ -526,8 +542,8 @@ export default function DeckSelectScreen() {
                 color: t.trialBannerText,
               }}
             >
-              Free trial: {trialStatus.daysRemaining} days /{" "}
-              {trialStatus.sessionsRemaining} sessions remaining
+              Free trial: {trialStatus.daysRemaining} day
+              {trialStatus.daysRemaining === 1 ? "" : "s"} remaining
             </Text>
             <Text
               style={{
@@ -542,43 +558,11 @@ export default function DeckSelectScreen() {
           </Pressable>
         )}
 
-      {/* Settings row */}
-      <View
-        style={{
-          marginHorizontal: 16,
-          marginTop: 12,
-          flexDirection: "row",
-          alignItems: "center",
-          justifyContent: "space-between",
-          backgroundColor: t.surface,
-          borderRadius: 12,
-          borderWidth: 1,
-          borderColor: t.border,
-          paddingHorizontal: 16,
-          paddingVertical: 12,
-        }}
-      >
-        <View style={{ flex: 1, marginRight: 12 }}>
-          <Text style={{ fontSize: 14, fontWeight: "600", color: t.text }}>
-            Always read answer
-          </Text>
-          <Text style={{ fontSize: 11, color: t.textSecondary }}>
-            Read the back of the card after every answer
-          </Text>
-        </View>
-        <Switch
-          value={alwaysReadBack}
-          onValueChange={setAlwaysReadBack}
-          trackColor={{ false: t.switchTrackOff, true: t.switchTrackOn }}
-          thumbColor={alwaysReadBack ? t.switchThumbOn : t.switchThumbOff}
-        />
-      </View>
-
       {/* Deck list */}
       <View
         style={{
           marginHorizontal: 16,
-          marginTop: 8,
+          marginTop: 12,
           borderRadius: 12,
           borderWidth: 1,
           borderColor: t.border,
@@ -624,7 +608,8 @@ export default function DeckSelectScreen() {
         <Text
           style={{ fontSize: 11, color: t.textDimmed, textAlign: "center" }}
         >
-          Tap the gear to set language + tutor instructions for each deck
+          Tap the gear to set language, read-back and tutor instructions for
+          each deck
         </Text>
       </View>
 
@@ -639,9 +624,12 @@ export default function DeckSelectScreen() {
           animationType="slide"
           onRequestClose={() => setSettingsModal(null)}
         >
-          <KeyboardAvoidingView
-            behavior={Platform.OS === "ios" ? "padding" : "height"}
-            style={{ flex: 1, justifyContent: "flex-end" }}
+          <View
+            style={{
+              flex: 1,
+              justifyContent: "flex-end",
+              paddingBottom: keyboardOffset,
+            }}
           >
             <Pressable
               style={{ flex: 1 }}
@@ -747,6 +735,56 @@ export default function DeckSelectScreen() {
                   })}
                 </View>
 
+                {/* Always read answer (per deck) */}
+                <View
+                  style={{
+                    flexDirection: "row",
+                    alignItems: "center",
+                    justifyContent: "space-between",
+                    marginBottom: 20,
+                  }}
+                >
+                  <View style={{ flex: 1, marginRight: 12 }}>
+                    <Text
+                      style={{
+                        fontSize: 13,
+                        fontWeight: "700",
+                        color: t.text,
+                      }}
+                    >
+                      Always read answer
+                    </Text>
+                    <Text
+                      style={{
+                        fontSize: 12,
+                        color: t.textSecondary,
+                        marginTop: 2,
+                      }}
+                    >
+                      Read the back of the card aloud after every answer, not
+                      just on incorrect ones.
+                    </Text>
+                  </View>
+                  <Switch
+                    testID="toggle-readback"
+                    value={settingsModal.readBack}
+                    onValueChange={(v) =>
+                      setSettingsModal(
+                        (prev) => prev && { ...prev, readBack: v },
+                      )
+                    }
+                    trackColor={{
+                      false: t.switchTrackOff,
+                      true: t.switchTrackOn,
+                    }}
+                    thumbColor={
+                      settingsModal.readBack
+                        ? t.switchThumbOn
+                        : t.switchThumbOff
+                    }
+                  />
+                </View>
+
                 {/* Tutor instructions */}
                 <Text
                   style={{
@@ -824,6 +862,10 @@ export default function DeckSelectScreen() {
                       settingsModal.deckName,
                       settingsModal.language,
                     );
+                    setDeckReadBack(
+                      settingsModal.deckName,
+                      settingsModal.readBack,
+                    );
                     setSettingsModal(null);
                   }}
                   style={{
@@ -846,7 +888,7 @@ export default function DeckSelectScreen() {
                 </Pressable>
               </View>
             </View>
-          </KeyboardAvoidingView>
+          </View>
         </Modal>
       )}
     </View>
