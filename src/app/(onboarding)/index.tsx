@@ -8,6 +8,7 @@ import {
 } from "react-native";
 import { useRouter } from "expo-router";
 import { ankiBridge } from "../../native/ankiBridge";
+import { AnalyticsEvents } from "../../services/analytics";
 import { light as t } from "../../theme/colors";
 import { EngramWordmark } from "../../components/EngramWordmark";
 
@@ -32,6 +33,7 @@ export default function AnkiDroidDetectionScreen() {
     console.log(
       `[onboarding] ankiBridge.isInstalled() took ${Date.now() - t0}ms → ${isInstalled}`,
     );
+    AnalyticsEvents.onboardingAnkidroidCheck(isInstalled);
     setDetectionState(isInstalled ? "installed" : "not-installed");
   }
 

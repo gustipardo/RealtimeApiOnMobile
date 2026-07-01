@@ -144,6 +144,8 @@ jest.mock("../analytics", () => ({
     sessionCompleted: jest.fn(),
     sessionError: jest.fn(),
     sessionReconnected: jest.fn(),
+    sessionFirstCardAnswered: jest.fn(),
+    trialExpired: jest.fn(),
     // New: sessionManager fires this on the trial-expired-mid-start path.
     paywallShown: jest.fn(),
   },

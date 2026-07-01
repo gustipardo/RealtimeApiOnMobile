@@ -1131,12 +1131,6 @@ function getPhaseVisual(phase: string): PhaseVisual {
         hint: "Listen to the feedback",
         color: "blue",
       };
-    case "advancing":
-      return {
-        label: "Next Card",
-        hint: "Moving to the next card...",
-        color: "gray",
-      };
     default:
       return { label: "Studying", hint: "Session in progress", color: "blue" };
   }

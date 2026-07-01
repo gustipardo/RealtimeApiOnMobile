@@ -55,6 +55,11 @@ class SessionManager {
   private phaseBeforeNetworkPause: string | null = null;
 
   /**
+   * Phase the user paused from (Pause button), restored by resume().
+   */
+  private phaseBeforeUserPause: string | null = null;
+
+  /**
    * Recovery timer fired when the session has been stuck in `evaluating`
    * for too long without any AI audio arriving. Catches BUG 3/4
    * (Gemini emits ctrl tokens + turnComplete but no audio.delta, so the
@@ -225,6 +230,7 @@ class SessionManager {
           /* best-effort */
         }
         transitionTo("error", "trial_expired");
+        AnalyticsEvents.trialExpired();
         AnalyticsEvents.paywallShown("trial_expired_at_start");
         const err: any = new Error("Trial expired");
         err.code = "trial_expired";
@@ -676,7 +682,6 @@ class SessionManager {
             "awaiting_answer",
             "evaluating",
             "giving_feedback",
-            "advancing",
             "ready",
           ];
           if (activePhases.includes(phase)) {
@@ -749,7 +754,6 @@ class SessionManager {
         "awaiting_answer",
         "evaluating",
         "giving_feedback",
-        "advancing",
         "ready",
         "paused",
       ];
@@ -993,6 +997,10 @@ class SessionManager {
     const isSkip = user_response_quality === "skipped";
     if (!isSkip) {
       recordAnswer(user_response_quality as "correct" | "incorrect");
+      const answeredSoFar = useSessionStore.getState().stats;
+      if (answeredSoFar.correct + answeredSoFar.incorrect === 1) {
+        AnalyticsEvents.sessionFirstCardAnswered();
+      }
       // Fire the SFX in the same tick as recordAnswer — that's the action
       // that flips `lastEvaluation`, which makes the on-screen banner
       // appear. The chime lands with the banner and fills the silent gap
@@ -1499,17 +1507,23 @@ class SessionManager {
   }
 
   /**
-   * Pause the session
+   * Pause the session. Snapshots the phase so resume() restores where the
+   * user actually was — resuming into a fixed phase used to strand the
+   * session in 'asking_question', where the user-transcript debounce (which
+   * only acts in 'awaiting_answer') never armed.
    */
   pause(): void {
-    const { transitionTo } = useSessionStore.getState();
+    const { transitionTo, phase } = useSessionStore.getState();
+    if (phase !== "paused") {
+      this.phaseBeforeUserPause = phase;
+    }
     webrtcManager.stopCurrentAudio(); // stop tutor speaking immediately
     webrtcManager.setMicrophoneMuted(true);
     transitionTo("paused", "user_paused");
   }
 
   /**
-   * Resume the session
+   * Resume the session into the phase it was paused from.
    */
   resume(): void {
     const { transitionTo } = useSessionStore.getState();
@@ -1521,7 +1535,9 @@ class SessionManager {
         error: String(err),
       });
     });
-    transitionTo("asking_question", "user_resumed");
+    const restore = this.phaseBeforeUserPause ?? "awaiting_answer";
+    this.phaseBeforeUserPause = null;
+    transitionTo(restore as any, "user_resumed");
   }
 }
 

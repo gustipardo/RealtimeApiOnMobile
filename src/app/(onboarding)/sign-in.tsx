@@ -59,6 +59,9 @@ export default function SignInScreen() {
     try {
       await signInWithGoogle();
       AnalyticsEvents.signupCompleted("google");
+      if (!useSettingsStore.getState().onboardingCompleted) {
+        AnalyticsEvents.onboardingCompleted();
+      }
       setOnboardingCompleted(true);
       // Start/sync the trial clock server-side (checkTrialStatus creates the
       // user doc + trialStart on first login), then show the trial-started

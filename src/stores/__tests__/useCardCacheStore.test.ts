@@ -204,49 +204,6 @@ describe('useCardCacheStore', () => {
     });
   });
 
-  describe('commitUiAdvance (BUG 12 pointer sync)', () => {
-    it('commits UI pointer forward to match data pointer', () => {
-      useCardCacheStore.getState().setCards(mockCards);
-      useCardCacheStore.setState({ currentIndex: 2, uiVisibleIndex: 1 });
-      useCardCacheStore.getState().commitUiAdvance();
-      expect(useCardCacheStore.getState().uiVisibleIndex).toBe(2);
-    });
-
-    it('is a no-op when pointers are already in sync', () => {
-      useCardCacheStore.getState().setCards(mockCards);
-      useCardCacheStore.setState({ currentIndex: 1, uiVisibleIndex: 1 });
-      // Snapshot state reference — zustand returns a new object on set,
-      // so an identity comparison is meaningful here.
-      const before = useCardCacheStore.getState();
-      useCardCacheStore.getState().commitUiAdvance();
-      const after = useCardCacheStore.getState();
-      // Identity preserved on no-op (the implementation returns `s` directly).
-      expect(after.uiVisibleIndex).toBe(before.uiVisibleIndex);
-      expect(after.currentIndex).toBe(before.currentIndex);
-    });
-
-    it('handles the initial case (both pointers at 0)', () => {
-      useCardCacheStore.getState().setCards(mockCards);
-      useCardCacheStore.getState().commitUiAdvance();
-      expect(useCardCacheStore.getState().uiVisibleIndex).toBe(0);
-    });
-
-    it('can be called when uiVisibleIndex is AHEAD of currentIndex (defensive)', () => {
-      // The data layer should never be ahead of the UI layer in practice
-      // (UI lags behind data), but pinning the actual behavior: the
-      // implementation just checks equality and unconditionally writes
-      // uiVisibleIndex = currentIndex on any diff — so if UI is ahead,
-      // it gets clamped back to match currentIndex. That matches the
-      // intent: uiVisibleIndex is "the card the user SEES" and that
-      // should never be ahead of where the data layer has actually
-      // advanced to.
-      useCardCacheStore.getState().setCards(mockCards);
-      useCardCacheStore.setState({ currentIndex: 0, uiVisibleIndex: 2 });
-      useCardCacheStore.getState().commitUiAdvance();
-      expect(useCardCacheStore.getState().uiVisibleIndex).toBe(0);
-    });
-  });
-
   describe('uiVisibleIndex defaults and lifecycle', () => {
     it('starts at 0', () => {
       expect(useCardCacheStore.getState().uiVisibleIndex).toBe(0);
@@ -254,7 +211,7 @@ describe('useCardCacheStore', () => {
 
     it('tracks getNextCard (advances together with currentIndex)', () => {
       // getNextCard only touches currentIndex. The UI pointer is
-      // independent — sessionManager drives commitUiAdvance.
+      // independent — sessionManager drives it directly via setState.
       useCardCacheStore.getState().setCards(mockCards);
       useCardCacheStore.getState().getNextCard();
       expect(useCardCacheStore.getState().currentIndex).toBe(1);

@@ -1,8 +1,10 @@
+import { useEffect } from "react";
 import { View, Text, Pressable } from "react-native";
 import Svg, { Path } from "react-native-svg";
 import { useRouter } from "expo-router";
 import { useSettingsStore } from "../../stores/useSettingsStore";
 import { useTrialStore } from "../../stores/useTrialStore";
+import { AnalyticsEvents } from "../../services/analytics";
 import { light as t } from "../../theme/colors";
 import { EngramWordmark } from "../../components/EngramWordmark";
 
@@ -20,6 +22,12 @@ export default function TrialStartedScreen() {
       ? status.daysRemaining
       : 7;
   const subscribed = !!status?.subscriptionActive;
+
+  useEffect(() => {
+    if (!subscribed) {
+      AnalyticsEvents.trialStarted();
+    }
+  }, []);
 
   function handleContinue() {
     // Deck was set before login. Continue into its session (mic permission is

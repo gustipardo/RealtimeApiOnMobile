@@ -1,5 +1,5 @@
-import { create } from 'zustand';
-import type { AnkiCard } from '../types/anki';
+import { create } from "zustand";
+import type { AnkiCard } from "../types/anki";
 
 export interface CardCacheStore {
   cards: AnkiCard[];
@@ -31,11 +31,6 @@ export interface CardCacheStore {
   pushCard: (card: AnkiCard) => void;
   getCurrentCard: () => AnkiCard | undefined;
   getNextCard: () => AnkiCard | undefined;
-  /**
-   * Commit the UI pointer forward to match the data pointer. Idempotent —
-   * if already in sync, no-op.
-   */
-  commitUiAdvance: () => void;
   clear: () => void;
 }
 
@@ -71,9 +66,6 @@ export const useCardCacheStore = create<CardCacheStore>((set, get) => ({
     }
     return undefined;
   },
-
-  commitUiAdvance: () =>
-    set((s) => (s.uiVisibleIndex === s.currentIndex ? s : { uiVisibleIndex: s.currentIndex })),
 
   clear: () => set({ cards: [], currentIndex: 0, uiVisibleIndex: 0 }),
 }));

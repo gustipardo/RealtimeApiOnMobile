@@ -127,6 +127,8 @@ jest.mock('../../services/analytics', () => ({
     sessionCompleted: jest.fn(),
     sessionError: jest.fn(),
     sessionReconnected: jest.fn(),
+    sessionFirstCardAnswered: jest.fn(),
+    trialExpired: jest.fn(),
     cardEvaluated: jest.fn(),
   },
 }));

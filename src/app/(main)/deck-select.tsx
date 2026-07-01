@@ -230,6 +230,7 @@ export default function DeckSelectScreen() {
       !trialStatus.isActive &&
       !trialStatus.subscriptionActive
     ) {
+      AnalyticsEvents.trialExpired();
       AnalyticsEvents.paywallShown("trial_expired");
       router.push("/(main)/paywall");
       return;
@@ -507,9 +508,7 @@ export default function DeckSelectScreen() {
             </Pressable>
           </View>
         </View>
-        <Text
-          style={{ fontSize: 13, color: t.textSecondary, marginTop: 6 }}
-        >
+        <Text style={{ fontSize: 13, color: t.textSecondary, marginTop: 6 }}>
           {totalDue > 0 ? `${totalDue} cards due` : `${decks.length} decks`}
         </Text>
       </View>

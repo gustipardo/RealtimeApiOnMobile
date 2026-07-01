@@ -126,6 +126,8 @@ jest.mock("../analytics", () => ({
     sessionCompleted: jest.fn(),
     sessionError: jest.fn(),
     sessionReconnected: jest.fn(),
+    sessionFirstCardAnswered: jest.fn(),
+    trialExpired: jest.fn(),
   },
 }));
 
@@ -795,5 +797,25 @@ describe("sessionManager — slow answer+refill must not falsely end the session
     await call;
 
     expect(useSessionStore.getState().phase).toBe("session_complete");
+  });
+});
+
+describe("sessionManager — pause/resume phase restore", () => {
+  it("resume() returns to the phase the user paused from", () => {
+    useSessionStore.getState().transitionTo("awaiting_answer", "test");
+
+    sessionManager.pause();
+    expect(useSessionStore.getState().phase).toBe("paused");
+
+    sessionManager.resume();
+    expect(useSessionStore.getState().phase).toBe("awaiting_answer");
+  });
+
+  it("resume() falls back to awaiting_answer without a snapshot", () => {
+    (sessionManager as any).phaseBeforeUserPause = null;
+    useSessionStore.getState().transitionTo("paused", "test");
+
+    sessionManager.resume();
+    expect(useSessionStore.getState().phase).toBe("awaiting_answer");
   });
 });

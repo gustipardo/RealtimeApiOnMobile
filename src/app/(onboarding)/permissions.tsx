@@ -3,6 +3,7 @@ import { View, Text, Pressable, Linking, AppState } from "react-native";
 import { useRouter } from "expo-router";
 import { ankiBridge } from "../../native/ankiBridge";
 import { useSettingsStore } from "../../stores/useSettingsStore";
+import { AnalyticsEvents } from "../../services/analytics";
 import { light as t } from "../../theme/colors";
 
 type PermissionStatus = "pending" | "granted";
@@ -19,7 +20,12 @@ export default function PermissionsScreen() {
 
   const checkPermissions = useCallback(async () => {
     const granted = await ankiBridge.hasApiPermission();
-    setAnkidroid(granted ? "granted" : "pending");
+    setAnkidroid((prev) => {
+      if (granted && prev === "pending") {
+        AnalyticsEvents.onboardingPermissionsGranted();
+      }
+      return granted ? "granted" : "pending";
+    });
   }, []);
 
   useEffect(() => {
@@ -51,6 +57,9 @@ export default function PermissionsScreen() {
   function handleContinue() {
     // AnkiDroid is connected — mark onboarding done and show the deck list.
     // Auth + mic/notification permissions happen on first deck entry.
+    if (!useSettingsStore.getState().onboardingCompleted) {
+      AnalyticsEvents.onboardingCompleted();
+    }
     useSettingsStore.getState().setOnboardingCompleted(true);
     router.replace("/(main)/deck-select");
   }
