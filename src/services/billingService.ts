@@ -35,6 +35,30 @@ let purchaseUpdateSubscription: EventSubscription | null = null;
 let purchaseErrorSubscription: EventSubscription | null = null;
 
 /**
+ * The in-flight purchase, if any. `requestPurchase` is event-based, not
+ * promise-based (its own docs: resolution only means the Play sheet
+ * launched) — the actual outcome arrives via purchaseUpdatedListener /
+ * purchaseErrorListener. This pending entry bridges the two so
+ * `purchaseSubscription` can resolve only after the backend has verified
+ * the purchase, letting callers refresh entitlement without racing the
+ * listener.
+ */
+let pendingPurchase: {
+  resolve: () => void;
+  reject: (err: Error) => void;
+} | null = null;
+
+const PURCHASE_COMPLETION_TIMEOUT_MS = 5 * 60 * 1000;
+
+function settlePendingPurchase(err?: Error): void {
+  const pending = pendingPurchase;
+  pendingPurchase = null;
+  if (!pending) return;
+  if (err) pending.reject(err);
+  else pending.resolve();
+}
+
+/**
  * Initialize the billing connection and listeners.
  * Call once at app startup (prod mode only).
  */
@@ -45,10 +69,11 @@ export async function initBilling(): Promise<void> {
 
   purchaseUpdateSubscription = purchaseUpdatedListener(
     async (purchase: Purchase) => {
-      // Acknowledge the purchase
-      await finishTransaction({ purchase });
-
-      // Notify backend to update subscription status
+      // Verify with the backend BEFORE acknowledging. If verification
+      // fails we deliberately do NOT finish the transaction: Play
+      // re-delivers unacknowledged purchases on the next app start (and
+      // auto-refunds after 3 days), so the entitlement write is retried
+      // instead of being silently lost after the user was charged.
       try {
         const callable = functions().httpsCallable("verifyPurchase");
         await callable({
@@ -56,18 +81,45 @@ export async function initBilling(): Promise<void> {
           productId: purchase.productId,
         });
       } catch (err) {
-        console.error("[Billing] Failed to verify purchase:", err);
+        console.error(
+          "[Billing] verifyPurchase failed — leaving transaction unacknowledged for retry:",
+          err,
+        );
+        settlePendingPurchase(
+          new Error(
+            "Purchase could not be confirmed with our server. It will be retried automatically — you have not lost it.",
+          ),
+        );
+        return;
       }
+
+      try {
+        await finishTransaction({ purchase });
+      } catch (err) {
+        console.error(
+          "[Billing] finishTransaction failed (entitlement already granted):",
+          err,
+        );
+      }
+
+      settlePendingPurchase();
     },
   );
 
   purchaseErrorSubscription = purchaseErrorListener((error: PurchaseError) => {
     console.error("[Billing] Purchase error:", error);
+    const err = new Error(error?.message || "Purchase failed");
+    (err as any).code = (error as any)?.code;
+    settlePendingPurchase(err);
   });
 }
 
 /**
- * Purchase a subscription.
+ * Purchase a subscription. Resolves only after the purchase has completed
+ * AND the backend verified it (see pendingPurchase above), so a caller may
+ * refresh the trial/subscription status immediately on resolution. Rejects
+ * on Play errors (including user cancel — error.code preserved) and on
+ * verification failure.
  */
 export async function purchaseSubscription(
   sku: SubscriptionSku,
@@ -89,17 +141,44 @@ export async function purchaseSubscription(
   const offerToken =
     (products[0] as any).subscriptionOfferDetails?.[0]?.offerToken ?? undefined;
 
-  await requestPurchase({
-    type: "subs",
-    request: {
-      google: {
-        skus: [productId],
-        subscriptionOffers: offerToken
-          ? [{ sku: productId, offerToken }]
-          : null,
+  settlePendingPurchase(new Error("Superseded by a new purchase attempt"));
+
+  const completion = new Promise<void>((resolve, reject) => {
+    const timeout = setTimeout(() => {
+      if (pendingPurchase === entry) pendingPurchase = null;
+      reject(new Error("Timed out waiting for purchase confirmation"));
+    }, PURCHASE_COMPLETION_TIMEOUT_MS);
+    const entry = {
+      resolve: () => {
+        clearTimeout(timeout);
+        resolve();
       },
-    },
+      reject: (e: Error) => {
+        clearTimeout(timeout);
+        reject(e);
+      },
+    };
+    // Armed BEFORE requestPurchase so a fast listener can't fire into a gap.
+    pendingPurchase = entry;
   });
+
+  try {
+    await requestPurchase({
+      type: "subs",
+      request: {
+        google: {
+          skus: [productId],
+          subscriptionOffers: offerToken
+            ? [{ sku: productId, offerToken }]
+            : null,
+        },
+      },
+    });
+  } catch (err) {
+    settlePendingPurchase(err instanceof Error ? err : new Error(String(err)));
+  }
+
+  await completion;
 }
 
 /**
@@ -196,6 +275,7 @@ export async function openManageSubscriptions(
  * Cleanup billing listeners.
  */
 export function cleanupBilling(): void {
+  settlePendingPurchase(new Error("Billing shut down"));
   purchaseUpdateSubscription?.remove();
   purchaseErrorSubscription?.remove();
   purchaseUpdateSubscription = null;

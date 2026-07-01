@@ -228,6 +228,14 @@ export const verifyPurchase = onCall(async (request) => {
     );
   }
 
+  // Allow-list: only our own Play subscription products can grant an
+  // entitlement. Without this, any signed-in client could flip itself to
+  // subscriptionStatus='active' with a made-up productId. Full Play
+  // Developer API validation of the purchaseToken is still the TODO above.
+  if (!planFromProductId(productId)) {
+    throw new HttpsError("invalid-argument", `Unknown productId: ${productId}`);
+  }
+
   const uid = request.auth.uid;
   await db.collection("users").doc(uid).set(
     {

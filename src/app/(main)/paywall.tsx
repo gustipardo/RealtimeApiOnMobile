@@ -62,13 +62,20 @@ export default function PaywallScreen() {
       const sku: SubscriptionSku =
         selectedPlan === "monthly" ? "monthly_499" : "yearly_3999";
 
+      // purchaseSubscription resolves only after the backend verified the
+      // purchase (billingService pendingPurchase bridge), so the refresh
+      // below reads the updated subscription status instead of racing the
+      // purchase listener.
       await purchaseSubscription(sku);
       AnalyticsEvents.subscriptionStarted(selectedPlan);
-      // Refresh so deck-select picks up the new subscription status reactively
-      // without the user needing to restart the app.
       await refreshTrialStatus();
       router.replace("/(main)/deck-select");
     } catch (err: any) {
+      const code = String(err?.code ?? "");
+      if (code === "user-cancelled" || code === "E_USER_CANCELLED") {
+        setError(null);
+        return;
+      }
       console.error("Purchase failed:", err);
       setError(err.message || "Purchase failed. Please try again.");
     } finally {

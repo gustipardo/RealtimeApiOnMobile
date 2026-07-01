@@ -17,15 +17,28 @@ jest.mock("../../config/env", () => ({
   requiresPayment: (...a: unknown[]) => mockRequiresPayment(...a),
 }));
 
+// Listener callbacks captured at initBilling() time so tests can play the
+// role of Play Billing: fire a completed purchase / an error and observe
+// how purchaseSubscription's completion promise reacts.
+const mockFinishTransaction = jest.fn();
+let purchaseUpdatedCb: ((p: unknown) => Promise<void>) | null = null;
+let purchaseErrorCb: ((e: unknown) => void) | null = null;
+
 jest.mock("react-native-iap", () => ({
   __esModule: true,
   initConnection: jest.fn(),
   fetchProducts: (...a: unknown[]) => mockFetchProducts(...a),
   requestPurchase: (...a: unknown[]) => mockRequestPurchase(...a),
-  finishTransaction: jest.fn(),
+  finishTransaction: (...a: unknown[]) => mockFinishTransaction(...a),
   getAvailablePurchases: (...a: unknown[]) => mockGetAvailablePurchases(...a),
-  purchaseUpdatedListener: jest.fn(() => ({ remove: jest.fn() })),
-  purchaseErrorListener: jest.fn(() => ({ remove: jest.fn() })),
+  purchaseUpdatedListener: jest.fn((cb) => {
+    purchaseUpdatedCb = cb;
+    return { remove: jest.fn() };
+  }),
+  purchaseErrorListener: jest.fn((cb) => {
+    purchaseErrorCb = cb;
+    return { remove: jest.fn() };
+  }),
 }));
 
 jest.mock("react-native", () => ({
@@ -53,6 +66,7 @@ import {
   restorePurchases,
   openManageSubscriptions,
   purchaseSubscription,
+  initBilling,
 } from "../billingService";
 
 const MONTHLY = "com.ankiconversacionales.app.monthly";
@@ -173,26 +187,89 @@ describe("billingService — production mode", () => {
     err.mockRestore();
   });
 
-  it("purchaseSubscription queries Play with type:'subs'", async () => {
-    mockFetchProducts.mockResolvedValueOnce([
-      { id: YEARLY, subscriptionOfferDetails: [{ offerToken: "ot-1" }] },
-    ]);
-    mockRequestPurchase.mockResolvedValueOnce(undefined);
-
-    await purchaseSubscription("yearly_3999");
-
-    expect(mockFetchProducts).toHaveBeenCalledWith({
-      skus: [YEARLY],
-      type: "subs",
-    });
-    expect(mockRequestPurchase).toHaveBeenCalledTimes(1);
-  });
-
   it("purchaseSubscription rejects when the product fetch is empty", async () => {
     mockFetchProducts.mockResolvedValueOnce([]);
     await expect(purchaseSubscription("monthly_499")).rejects.toThrow(
       "Subscription product not found",
     );
     expect(mockRequestPurchase).not.toHaveBeenCalled();
+  });
+});
+
+describe("billingService — purchase completion (event-based flow)", () => {
+  // requestPurchase is event-based: its own resolution only means the Play
+  // sheet launched. purchaseSubscription must resolve only after the
+  // purchaseUpdatedListener has verified the purchase with the backend, so
+  // the paywall's post-purchase refreshTrialStatus reads the updated
+  // entitlement instead of racing the listener.
+
+  const launchPurchase = async () => {
+    mockFetchProducts.mockResolvedValueOnce([
+      { id: YEARLY, subscriptionOfferDetails: [{ offerToken: "ot-1" }] },
+    ]);
+    mockRequestPurchase.mockResolvedValueOnce(undefined);
+    const completion = purchaseSubscription("yearly_3999");
+    // Let fetchProducts + requestPurchase settle so the pending entry is armed.
+    await new Promise((r) => setTimeout(r, 0));
+    return completion;
+  };
+
+  beforeEach(async () => {
+    await initBilling();
+  });
+
+  it("queries Play with type:'subs' and resolves after verify + finish", async () => {
+    mockCallable.mockResolvedValue({ data: { status: "success" } });
+    const completion = launchPurchase();
+    await new Promise((r) => setTimeout(r, 0));
+
+    await purchaseUpdatedCb!({ productId: YEARLY, purchaseToken: "tok-9" });
+    await expect(completion).resolves.toBeUndefined();
+
+    expect(mockFetchProducts).toHaveBeenCalledWith({
+      skus: [YEARLY],
+      type: "subs",
+    });
+    expect(mockRequestPurchase).toHaveBeenCalledTimes(1);
+    // Verify runs BEFORE the transaction is acknowledged.
+    expect(mockCallable).toHaveBeenCalledWith("verifyPurchase", {
+      purchaseToken: "tok-9",
+      productId: YEARLY,
+    });
+    expect(mockFinishTransaction).toHaveBeenCalledTimes(1);
+    expect(mockCallable.mock.invocationCallOrder[0]).toBeLessThan(
+      mockFinishTransaction.mock.invocationCallOrder[0],
+    );
+  });
+
+  it("rejects and does NOT acknowledge when backend verification fails", async () => {
+    mockCallable.mockRejectedValue(new Error("backend down"));
+    const err = jest.spyOn(console, "error").mockImplementation(() => {});
+    const completion = launchPurchase();
+    await new Promise((r) => setTimeout(r, 0));
+
+    await purchaseUpdatedCb!({ productId: YEARLY, purchaseToken: "tok-10" });
+
+    await expect(completion).rejects.toThrow(/could not be confirmed/);
+    // Unacknowledged on purpose: Play re-delivers the purchase on next
+    // launch so the entitlement write is retried, not silently lost.
+    expect(mockFinishTransaction).not.toHaveBeenCalled();
+    err.mockRestore();
+  });
+
+  it("rejects with the Play error (code preserved) when the purchase errors", async () => {
+    const err = jest.spyOn(console, "error").mockImplementation(() => {});
+    const completion = launchPurchase();
+    await new Promise((r) => setTimeout(r, 0));
+
+    purchaseErrorCb!({ code: "user-cancelled", message: "User cancelled" });
+
+    await expect(completion).rejects.toMatchObject({
+      code: "user-cancelled",
+      message: "User cancelled",
+    });
+    expect(mockCallable).not.toHaveBeenCalled();
+    expect(mockFinishTransaction).not.toHaveBeenCalled();
+    err.mockRestore();
   });
 });
